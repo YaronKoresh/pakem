@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pakem"
@@ -31,6 +31,9 @@ keywords = ["repository", "packer", "xml", "codebase"]
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.1",
+    "poethepoet",
+    "pre-commit",
+    "build"
 ]
 
 [project.scripts]
@@ -52,8 +55,28 @@ target-version = "py310"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
+# E/W (Standard), F (Pyflakes), I (Import Sorting), B (Bugbear/Best Practices), UP (Upgrade Syntax)
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = []
+fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
 force-single-line = false
 combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.poe.tasks]
+# Quality Assurance
+lint = "ruff check . --fix"
+format = "ruff format ."
+test = "pytest tests/"
+check = ["format", "lint", "test"]
+
+# Build Pipeline
+build = { cmd = "python -m build" }
+
+# Setup Task
+hook = { cmd = "pre-commit install" }
