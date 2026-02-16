@@ -1,0 +1,25 @@
+name: "Enforce PR Title"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify Semantic Title
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const regex = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?: .+/;
+            
+            if (!regex.test(title)) {
+              core.setFailed(`PR Title "${title}" does not follow Conventional Commits (e.g., "fix: database error").`);
+            } else {
+              console.log("✅ Title is semantic.");
+            }
