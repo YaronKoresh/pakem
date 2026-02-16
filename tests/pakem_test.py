@@ -1,7 +1,5 @@
 """Tests for the pakem package."""
 
-
-
 from pakem import RepoPacker, count_tokens, get_ignore_patterns, is_binary, should_ignore
 
 
@@ -119,5 +117,5 @@ class TestRepoPacker:
 
         content = out.read_text()
         assert 'total_files="1"' in content
-        assert 'tokens=' in content
-        assert 'lines=' in content
+        assert "tokens=" in content
+        assert "lines=" in content
