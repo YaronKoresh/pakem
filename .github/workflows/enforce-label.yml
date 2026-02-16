@@ -5,7 +5,7 @@ on:
     types: [labeled, unlabeled]
 
 permissions:
-  pull-requests: read
+  pull-requests: write
   checks: write
 
 jobs:
@@ -17,10 +17,17 @@ jobs:
         with:
           script: |
             const labels = context.payload.pull_request.labels.map(l => l.name);
-            const required = ['enhancement', 'bug', 'documentation', 'chore', 'breaking'];
+            const required = ['enhancement', 'bug', 'documentation'];
             const hasLabel = labels.some(l => required.includes(l));
             if (!hasLabel) {
-              core.setFailed(`❌ PR is missing a semantic label! Please add one of: ${required.join(', ')}`);
+              const errMsg = `❌ PR is missing a semantic label! Please add one of: ${required.join(', ')}`;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: errMsg
+              });
+              core.setFailed(errMsg);
             } else {
               console.log(`✅ Semantic label found: ${labels.join(', ')}`);
             }
