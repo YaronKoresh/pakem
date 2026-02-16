@@ -39,7 +39,7 @@ jobs:
 
           PREVIOUS_REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --jq '.[] | select(.user.login=="github-actions[bot]") | .id')
           for REVIEW_ID in $PREVIOUS_REVIEWS; do
-            gh api -X PUT "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews/$REVIEW_ID/dismissals" -f message="Superseded by new fixes" || true
+            gh api -X POST "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews/$REVIEW_ID/dismissals" -f message="Superseded by new fixes" || true
           done
 
           python3 - <<'EOF'
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - name: Download Fixed Code
         uses: actions/download-artifact@v7

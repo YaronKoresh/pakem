@@ -1,7 +1,7 @@
 name: Welcome New Contributors
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened]
   issues:
     types: [opened]
@@ -18,4 +18,4 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           issue-message: "👋 Hi there! Thanks for opening your first issue. We will look into it soon."
-          pr-message: "🎉 Congrats on your first Pull Request! Please make sure you have run `npm run fix-code` before submitting."
+          pr-message: "🎉 Congrats on your first Pull Request! Please make sure you have run `ruff check . && ruff format` before submitting."

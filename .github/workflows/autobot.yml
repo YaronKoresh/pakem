@@ -38,11 +38,11 @@ jobs:
               const milestones = await github.rest.issues.listMilestones({
                 owner, repo, state: 'open', sort: 'due_on', direction: 'asc'
               });
-              
+
               if (milestones.data.length > 0) {
                 return milestones.data[0];
               }
-              
+
               let nextVersion = "v0.0.1";
               try {
                 const releases = await github.rest.repos.listReleases({ owner, repo });
@@ -64,7 +64,7 @@ jobs:
 
             if (['opened', 'synchronize', 'reopened'].includes(payload.action)) {
               const milestone = await getOrCreateMilestone();
-              
+
               const currentMilestone = payload.issue?.milestone || payload.pull_request?.milestone;
               if (!currentMilestone) {
                 await github.rest.issues.update({
@@ -76,39 +76,35 @@ jobs:
               const items = await github.paginate(github.rest.issues.listForRepo, {
                 owner, repo, milestone: milestone.number, state: 'all'
               });
-              
-              const hasFeature = items.some(i => 
+
+              const hasFeature = items.some(i =>
                 i.labels.some(l => l.name.includes('enhancement') || l.name.includes('feat'))
               );
 
               const rawParts = milestone.title.replace('v', '').split('.').map(Number);
               let [major, minor, patch] = [
-                  rawParts[0] || 0, 
-                  rawParts[1] || 0, 
+                  rawParts[0] || 0,
+                  rawParts[1] || 0,
                   rawParts[2] || 0
               ];
 
               let newTitle = milestone.title;
 
-              const isBreaking = items.some(i => 
+              const isBreaking = items.some(i =>
                 i.labels.some(l => l.name.includes('breaking') || l.name.includes('major'))
               );
 
               if (isBreaking) {
-                  if (minor !== 0 || patch !== 0) {
-                      major++;
-                      minor = 0;
-                      patch = 0;
-                      newTitle = `v${major}.${minor}.${patch}`;
-                  }
+                  major++;
+                  minor = 0;
+                  patch = 0;
+                  newTitle = `v${major}.${minor}.${patch}`;
               } else if (hasFeature) {
-                  if (patch !== 0) {
-                      minor++;
-                      patch = 0;
-                      newTitle = `v${major}.${minor}.${patch}`;
-                  }
+                  minor++;
+                  patch = 0;
+                  newTitle = `v${major}.${minor}.${patch}`;
               }
-              
+
               if (newTitle !== milestone.title) {
                 await github.rest.issues.updateMilestone({
                   owner, repo, milestone_number: milestone.number, title: newTitle
@@ -125,10 +121,10 @@ jobs:
                 owner, repo, milestone_number: mData.number
               });
 
-              if (freshMilestone.data.open_issues === 0 && 
-                  freshMilestone.data.state === 'open' && 
+              if (freshMilestone.data.open_issues === 0 &&
+                  freshMilestone.data.state === 'open' &&
                   freshMilestone.data.closed_issues > 0) {
-                 
+
                  const version = freshMilestone.data.title;
                  const allOpen = await github.rest.issues.listMilestones({
                    owner, repo, state: 'open'
@@ -140,7 +136,7 @@ jobs:
                  };
 
                  const currentVal = parseVer(version);
-                 
+
                  const olderExists = allOpen.data.some(m => {
                     if (m.number === freshMilestone.data.number) return false;
                     return parseVer(m.title) < currentVal;
@@ -152,7 +148,7 @@ jobs:
                  }
 
                  console.log(`🎉 Milestone ${version} complete. Releasing...`);
-                 
+
                  await github.rest.issues.updateMilestone({
                    owner, repo, milestone_number: freshMilestone.data.number, state: 'closed'
                  });
@@ -165,9 +161,9 @@ jobs:
                  });
 
                  const parts = version.replace('v', '').split('.').map(Number);
-                 parts[2] += 1; 
+                 parts[2] += 1;
                  const nextVersion = `v${parts.join('.')}`;
-                 
+
                  await github.rest.issues.createMilestone({
                     owner, repo, title: nextVersion
                  });
