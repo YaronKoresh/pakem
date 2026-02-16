@@ -13,10 +13,31 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
-      - name: Auto-Approve and Merge
+      - name: Auto-Approve and Merge (non-major updates only)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          gh pr review "$PR_URL" --approve --body "✅ Automated approval for security update."
-          gh pr merge "$PR_URL" --auto --check
+          echo "Dependabot PR title: $PR_TITLE"
+          
+          # Expect titles like: "Bump <package> from X.Y.Z to A.B.C"
+          FROM_VER=$(echo "$PR_TITLE" | sed -E 's/.* from ([0-9]+\.[0-9]+\.[0-9]+) to .*/\1/' || true)
+          TO_VER=$(echo "$PR_TITLE" | sed -E 's/.* to ([0-9]+\.[0-9]+\.[0-9]+).*/\1/' || true)
+          
+          if [ -z "$FROM_VER" ] || [ -z "$TO_VER" ]; then
+            echo "Could not parse versions from PR title; skipping auto-merge."
+            exit 0
+          fi
+          
+          FROM_MAJOR=$(echo "$FROM_VER" | cut -d. -f1)
+          TO_MAJOR=$(echo "$TO_VER" | cut -d. -f1)
+          
+          if [ "$FROM_MAJOR" != "$TO_MAJOR" ]; then
+            echo "Detected major version bump ($FROM_VER -> $TO_VER); skipping auto-approve and auto-merge."
+            exit 0
+          fi
+          
+          echo "Non-major update detected ($FROM_VER -> $TO_VER); proceeding with auto-approve and auto-merge."
+          gh pr review "$PR_URL" --approve --body "✅ Automated approval for non-major Dependabot update ($FROM_VER → $TO_VER)."
+          gh pr merge "$PR_URL" --auto

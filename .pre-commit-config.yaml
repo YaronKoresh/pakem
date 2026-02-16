@@ -24,6 +24,7 @@ repos:
       - id: detect-private-key
       - id: file-contents-sorter
         args: [ --unique ]
+        files: "\\.gitignore$"
       - id: fix-byte-order-marker
       - id: forbid-submodules
       - id: mixed-line-ending
@@ -32,5 +33,4 @@ repos:
       - id: no-commit-to-branch
       - id: pretty-format-json
         args: [ --autofix ]
-      - id: requirements-txt-fixer
       - id: sort-simple-yaml

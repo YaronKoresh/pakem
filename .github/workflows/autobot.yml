@@ -95,18 +95,14 @@ jobs:
               );
 
               if (isBreaking) {
-                  if (minor !== 0 || patch !== 0) {
-                      major++;
-                      minor = 0;
-                      patch = 0;
-                      newTitle = `v${major}.${minor}.${patch}`;
-                  }
+                  major++;
+                  minor = 0;
+                  patch = 0;
+                  newTitle = `v${major}.${minor}.${patch}`;
               } else if (hasFeature) {
-                  if (patch !== 0) {
-                      minor++;
-                      patch = 0;
-                      newTitle = `v${major}.${minor}.${patch}`;
-                  }
+                  minor++;
+                  patch = 0;
+                  newTitle = `v${major}.${minor}.${patch}`;
               }
               
               if (newTitle !== milestone.title) {
