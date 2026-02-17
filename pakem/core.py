@@ -88,7 +88,10 @@ def count_tokens(text):
 
 def get_file_info(path):
     stats = os.stat(path)
-    return {"size": stats.st_size, "mtime": datetime.datetime.fromtimestamp(stats.st_mtime).isoformat()}
+    return {
+        "size": stats.st_size,
+        "mtime": datetime.datetime.fromtimestamp(stats.st_mtime).isoformat(),
+    }
 
 
 class RepoPacker:
@@ -115,7 +118,9 @@ class RepoPacker:
         self.total_size = len(full_content_temp.encode("utf-8"))
         self.total_tokens = count_tokens(full_content_temp)
 
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S GMT")
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S GMT"
+        )
         self.xml_content[1] = (
             f'<repository root="{self.root_dir}" '
             f'timestamp="{timestamp}" '
@@ -155,7 +160,9 @@ class RepoPacker:
             rel_path = os.path.relpath(full_path, self.root_dir)
 
             if os.path.isdir(full_path):
-                self.xml_content.append(f'{indent}<directory name="{item}" path="{rel_path}" depth="{depth}">\n')
+                self.xml_content.append(
+                    f'{indent}<directory name="{item}" path="{rel_path}" depth="{depth}">\n'
+                )
                 self._process_directory(full_path, depth + 1)
                 self.xml_content.append(f"{indent}</directory>\n")
 
@@ -188,8 +195,12 @@ class RepoPacker:
                 length = len(line)
                 leading_ws = length - len(line.lstrip())
 
-                line_attrs = f'index="{i}" length="{length}" indentation="{leading_ws}"'
-                self.xml_content.append(f"{indent}  <line {line_attrs}><![CDATA[{safe_line}]]></line>\n")
+                line_attrs = (
+                    f'index="{i}" length="{length}" indentation="{leading_ws}"'
+                )
+                self.xml_content.append(
+                    f"{indent}  <line {line_attrs}><![CDATA[{safe_line}]]></line>\n"
+                )
 
             self.xml_content.append(f"{indent}</file>\n")
 
@@ -199,10 +210,16 @@ class RepoPacker:
 
 def main():
     """CLI entry point for pakem."""
-    parser = argparse.ArgumentParser(description="Pack a repository into an XML representation.")
+    parser = argparse.ArgumentParser(
+        description="Pack a repository into an XML representation."
+    )
     parser.add_argument("--path", default=".", help="Root directory to pack")
-    parser.add_argument("--out", default="repo.xml", help="Output XML file path")
-    parser.add_argument("--ignore", nargs="*", help="Additional ignore patterns")
+    parser.add_argument(
+        "--out", default="repo.xml", help="Output XML file path"
+    )
+    parser.add_argument(
+        "--ignore", nargs="*", help="Additional ignore patterns"
+    )
     args = parser.parse_args()
 
     packer = RepoPacker(args.path, args.out, args.ignore)

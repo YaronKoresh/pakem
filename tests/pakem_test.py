@@ -1,6 +1,12 @@
 """Tests for the pakem package."""
 
-from pakem import RepoPacker, count_tokens, get_ignore_patterns, is_binary, should_ignore
+from pakem import (
+    RepoPacker,
+    count_tokens,
+    get_ignore_patterns,
+    is_binary,
+    should_ignore,
+)
 
 
 class TestCountTokens:
@@ -37,10 +43,15 @@ class TestIsBinary:
 
 class TestShouldIgnore:
     def test_gitignore_pattern(self):
-        assert should_ignore("/root/__pycache__", "/root", ["__pycache__"]) is True
+        assert (
+            should_ignore("/root/__pycache__", "/root", ["__pycache__"]) is True
+        )
 
     def test_no_match(self):
-        assert should_ignore("/root/src/main.py", "/root", ["__pycache__"]) is False
+        assert (
+            should_ignore("/root/src/main.py", "/root", ["__pycache__"])
+            is False
+        )
 
     def test_glob_pattern(self):
         assert should_ignore("/root/test.pyc", "/root", ["*.pyc"]) is True
