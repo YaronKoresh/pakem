@@ -80,7 +80,7 @@ class TestGetIgnorePatterns:
 
 class TestRepoPacker:
     def test_pack_creates_output(self, tmp_path):
-        # Create a simple repo structure
+
         src = tmp_path / "src"
         src.mkdir()
         (src / "hello.py").write_text("print('hello')\n")
