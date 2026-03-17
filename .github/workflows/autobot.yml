@@ -280,6 +280,9 @@ jobs:
               "- If nothing fits, return an empty array: []",
               "",
               "PREFERENCE RULES:",
+              "- Version-critical labels must be prioritized first when evidence exists: breaking-change, enhancement, security, bug, performance, api, database, schema, compatibility, migration, feature-flag, runtime.",
+              "- If both broad maintenance labels and version-critical labels apply, put version-critical labels first.",
+              "- If breaking behavior is clearly supported, include breaking-change and rank it first.",
               "- For GitHub Actions, bots, repo automation, labeling, issue management, or release workflow changes, strongly prefer workflow, automation, github, ci, config, or release only when the summary clearly supports them.",
               "- Do not apply performance unless the summary explicitly describes speed, caching, efficiency, latency, memory, or throughput improvements.",
               "- Do not apply cleanup unless the summary explicitly says code, files, or logic were removed as obsolete or unused.",
@@ -386,6 +389,8 @@ jobs:
             const isPR = context.eventName === 'pull_request';
             const MIN_RELEASE_SIZE = 3;
             const MAX_AI_LABELS = 6;
+            const VERSION_SENSITIVE_LABELS = ['breaking-change', 'enhancement', 'security', 'bug', 'performance', 'api', 'database', 'schema', 'compatibility', 'migration', 'feature-flag', 'runtime'];
+            const VERSION_LABEL_ALIASES = { 'breaking-changes': 'breaking-change', 'breaking_change': 'breaking-change' };
             const FORCE_RELEASE_TYPES = ['enhancement', 'breaking-change', 'security'];
             const RELEASE_RELEVANT_LABELS = ['api', 'breaking-change', 'bug', 'compatibility', 'database', 'enhancement', 'feature-flag', 'migration', 'performance', 'runtime', 'schema', 'security'];
             const SECONDARY_LABELS = ['chore', 'ci', 'cleanup', 'config', 'dependencies', 'documentation', 'dx', 'formatting', 'github', 'lint', 'quality', 'refactor', 'style', 'test', 'tooling', 'workflow'];
@@ -454,17 +459,73 @@ jobs:
               'serialization': { color: '2b67c6', description: "Serialization format changes" }
             };
             const VALID_LABELS = new Set(Object.keys(labelDefinitions));
+            const VERSION_BUMP_BY_LABEL = {
+              'breaking-change': 'major',
+              'enhancement': 'minor',
+              'security': 'patch',
+              'bug': 'patch',
+              'performance': 'patch',
+              'api': 'patch',
+              'database': 'patch',
+              'schema': 'patch',
+              'compatibility': 'patch',
+              'migration': 'patch',
+              'feature-flag': 'patch',
+              'runtime': 'patch'
+            };
+            const BUMP_ORDER = { none: 0, patch: 1, minor: 2, major: 3 };
             function hasReleaseRelevantLabel(labels) {
               return labels.some(label => RELEASE_RELEVANT_LABELS.includes(label));
             }
+            function normalizeLabelName(label) {
+              const normalized = String(label || '').trim().toLowerCase();
+              return VERSION_LABEL_ALIASES[normalized] || normalized;
+            }
             function trimLowSignalLabels(labels) {
               if (labels.length <= 3) return labels;
-              const primary = labels.filter(label => !SECONDARY_LABELS.includes(label));
-              const secondary = labels.filter(label => SECONDARY_LABELS.includes(label));
-              const cappedPrimary = primary.slice(0, MAX_AI_LABELS);
+              const uniqueLabels = [...new Set(labels.map(normalizeLabelName).filter(label => VALID_LABELS.has(label)))];
+              const versionCritical = VERSION_SENSITIVE_LABELS.filter(label => uniqueLabels.includes(label));
+              const primary = uniqueLabels.filter(label => !SECONDARY_LABELS.includes(label) && !versionCritical.includes(label));
+              const secondary = uniqueLabels.filter(label => SECONDARY_LABELS.includes(label));
+              const cappedPrimary = [...versionCritical, ...primary].slice(0, MAX_AI_LABELS);
               const remainingSlots = Math.max(MAX_AI_LABELS - cappedPrimary.length, 0);
               const cappedSecondary = secondary.slice(0, remainingSlots);
               return [...cappedPrimary, ...cappedSecondary].slice(0, MAX_AI_LABELS);
+            }
+            function parseVersionTag(rawVersion) {
+              const match = String(rawVersion || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+              if (!match) return { major: 0, minor: 0, patch: 1 };
+              return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+            }
+            function formatVersionTag(version) {
+              return `v${version.major}.${version.minor}.${version.patch}`;
+            }
+            function maxBump(current, next) {
+              return BUMP_ORDER[next] > BUMP_ORDER[current] ? next : current;
+            }
+            function bumpForLabels(labels) {
+              return labels.reduce((bump, label) => {
+                const normalized = normalizeLabelName(label);
+                const next = VERSION_BUMP_BY_LABEL[normalized] || 'none';
+                return maxBump(bump, next);
+              }, 'none');
+            }
+            function computeTargetVersion(baseVersion, bumpType) {
+              const parsed = parseVersionTag(baseVersion);
+              if (bumpType === 'major') return formatVersionTag({ major: parsed.major + 1, minor: 0, patch: 0 });
+              if (bumpType === 'minor') return formatVersionTag({ major: parsed.major, minor: parsed.minor + 1, patch: 0 });
+              if (bumpType === 'patch') return formatVersionTag({ major: parsed.major, minor: parsed.minor, patch: parsed.patch + 1 });
+              return formatVersionTag(parsed);
+            }
+            async function ensureMilestoneBaseVersion(milestone) {
+              const description = String(milestone.description || '');
+              const markerMatch = description.match(/autobot-base:(v\d+\.\d+\.\d+)/i);
+              const baseVersion = markerMatch ? markerMatch[1] : formatVersionTag(parseVersionTag(milestone.title));
+              if (markerMatch) return { baseVersion, milestone };
+              const marker = `autobot-base:${baseVersion}`;
+              const nextDescription = description.trim() ? `${description.trim()}\n\n${marker}` : marker;
+              const updated = await github.rest.issues.updateMilestone({ owner, repo, milestone_number: milestone.number, description: nextDescription });
+              return { baseVersion, milestone: updated.data };
             }
             async function ensureLabelExists(name) {
               try { await github.rest.issues.getLabel({ owner, repo, name }); }
@@ -496,9 +557,11 @@ jobs:
               try {
                 const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim();
                 const parsed = JSON.parse(cleaned);
-                if (Array.isArray(parsed)) return [...new Set(parsed.map(l => String(l).trim().toLowerCase()).filter(l => VALID_LABELS.has(l)))];
+                if (Array.isArray(parsed)) {
+                  return [...new Set(parsed.map(l => normalizeLabelName(l)).filter(l => VALID_LABELS.has(l)))];
+                }
               } catch (e) {
-                const lines = raw.replace(/[\[\]"'`]/g, '').split(/[,\n]/).map(l => l.trim().toLowerCase()).filter(l => VALID_LABELS.has(l));
+                const lines = raw.replace(/[\[\]"'`]/g, '').split(/[,\n]/).map(l => normalizeLabelName(l)).filter(l => VALID_LABELS.has(l));
                 return [...new Set(lines)];
               }
               return [];
@@ -571,19 +634,23 @@ jobs:
               if (!freshIssue.data.milestone) await github.rest.issues.update({ owner, repo, issue_number: issueNumber, milestone: milestone.number });
               const items = await github.paginate(github.rest.issues.listForRepo, { owner, repo, milestone: milestone.number, state: 'all' });
               const releaseItems = items.filter(item => item.pull_request && item.labels.some(label => RELEASE_RELEVANT_LABELS.includes(label.name)));
-              const hasFeature = releaseItems.some(item => item.labels.some(label => label.name === 'enhancement'));
               const isBreaking = releaseItems.some(item => item.labels.some(label => label.name === 'breaking-change'));
               if (isBreaking && isPR) {
                 const comments = await github.rest.issues.listComments({ owner, repo, issue_number: issueNumber });
                 const alreadyAlerted = comments.data.some(c => c.body.includes('MAJOR RELEASE ALERT'));
                 if (!alreadyAlerted) await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: `🚨 **MAJOR RELEASE ALERT** 🚨\n\n@${owner} This PR triggers a **major** version bump due to breaking changes detected by AI analysis.` });
               }
-              const rawParts = milestone.title.replace('v', '').split('.').map(Number);
-              let [major, minor, patch] = [rawParts[0] || 0, rawParts[1] || 0, rawParts[2] || 0];
-              let newTitle = milestone.title;
-              if (isBreaking) { major++; minor = 0; patch = 0; newTitle = `v${major}.${minor}.${patch}`; }
-              else if (hasFeature) { minor++; patch = 0; newTitle = `v${major}.${minor}.${patch}`; }
-              if (newTitle !== milestone.title) await github.rest.issues.updateMilestone({ owner, repo, milestone_number: milestone.number, title: newTitle });
+              const milestoneWithBase = await ensureMilestoneBaseVersion(milestone);
+              const releaseBump = releaseItems.reduce((bump, item) => {
+                const itemLabels = item.labels.map(label => normalizeLabelName(label.name));
+                const itemBump = bumpForLabels(itemLabels);
+                return maxBump(bump, itemBump);
+              }, 'none');
+              const requiredBump = releaseBump === 'none' && releaseItems.length > 0 ? 'patch' : releaseBump;
+              const newTitle = computeTargetVersion(milestoneWithBase.baseVersion, requiredBump);
+              if (newTitle !== milestoneWithBase.milestone.title) {
+                await github.rest.issues.updateMilestone({ owner, repo, milestone_number: milestone.number, title: newTitle, description: milestoneWithBase.milestone.description || milestone.description || '' });
+              }
             }
             if (payload.action === 'closed') {
               if (!payload.pull_request || !payload.pull_request.merged) return;
