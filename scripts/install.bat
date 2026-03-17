@@ -2,7 +2,7 @@
 
 cd %~dp0..
 
-call pip install -e ".[dev]"
+call pip install -e ".[dev,extra]"
 call poe hook
 
 pause

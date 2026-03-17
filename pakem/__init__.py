@@ -1,11 +1,31 @@
-"""pakem - A repository packer that generates XML representations of codebases."""
-
 __version__ = "1.0.0"
 
-from pakem.core import (
-    RepoPacker as RepoPacker,
-    count_tokens as count_tokens,
-    get_ignore_patterns as get_ignore_patterns,
-    is_binary as is_binary,
-    should_ignore as should_ignore,
+from pakem.analyze import FileMetadata, analyze_text, count_tokens, is_binary
+from pakem.cli import main
+from pakem.commands import BaseCommand, DiffCommand, PackCommand, RestoreCommand
+from pakem.ignore import IgnoreRules
+from pakem.packer import RepoPacker
+from pakem.serialize import XmlSerializer
+from pakem.tokenizer import (
+    DEFAULT_TOKEN_COUNTER,
+    TokenCounter,
+    get_token_counter,
 )
+
+__all__ = [
+    "main",
+    "RepoPacker",
+    "IgnoreRules",
+    "XmlSerializer",
+    "analyze_text",
+    "count_tokens",
+    "is_binary",
+    "FileMetadata",
+    "DEFAULT_TOKEN_COUNTER",
+    "get_token_counter",
+    "TokenCounter",
+    "BaseCommand",
+    "PackCommand",
+    "DiffCommand",
+    "RestoreCommand",
+]
