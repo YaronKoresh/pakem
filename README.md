@@ -235,7 +235,7 @@ pakem pack [--path PATH] [--out OUT] [--format {xml,json,proto,pakem,llm-prompt}
 | `--semantic-chunking` | flag | `false` | Preserve class/function boundaries when rendering file content |
 | `--summary-mode` | enum | `off` | Optional low-priority summarization mode |
 | `--plugin` | list[string] | none | Optional plugin module paths loaded before execution |
-| `--cache-mode` | enum | `off` | Analysis cache mode (`off|local|memory`) |
+| `--cache-mode` | enum | `off` | Analysis cache mode (off/local/memory) |
 | `--dedup-chunks` | flag | `false` | Enable chunk-level deduplication for pakem payloads |
 | `--distributed-shards` | int | none | Total number of shards for distributed packing |
 | `--distributed-index` | int | none | Zero-based shard index for this run |
@@ -257,8 +257,8 @@ pakem pack [--path PATH] [--out OUT] [--format {xml,json,proto,pakem,llm-prompt}
 | `--cipher` | enum | `aes-gcm` | Encryption profile for pakem payload encryption |
 | `--sign-key` | string | none | Optional provenance signature key (`hmac-sha256`) |
 | `--split-size` | size | none | pakem split threshold (`1MB`, `512KB`, `2GB`) |
-| `--sensitive-data-policy` | enum | `off` | Sensitive data handling mode (`off|warn|redact|block`) |
-| `--secret-scanner` | enum | `builtin` | Secret scanner integration mode (`builtin|gitleaks|trufflehog|auto|off`) |
+| `--sensitive-data-policy` | enum | `off` | Sensitive data handling mode (off/warn/redact/block) |
+| `--secret-scanner` | enum | `builtin` | Secret scanner integration mode (builtin/gitleaks/trufflehog/auto/off) |
 | `--sensitive-report-out` | string | none | Optional JSON report output for sensitive-data findings |
 | `--selection-report-out` | string | none | Optional JSON report with selected and skipped paths |
 
@@ -309,7 +309,7 @@ pakem diff --state STATE [--path PATH] [--out OUT] [--diff-out FILE]
 | `--semantic-chunking` | flag | No | Preserve class/function boundaries when rendering file content |
 | `--summary-mode` | enum | No | Optional low-priority summarization mode |
 | `--plugin` | list[string] | No | Optional plugin module paths loaded before execution |
-| `--cache-mode` | enum | No | Analysis cache mode (`off|local|memory`) |
+| `--cache-mode` | enum | No | Analysis cache mode (off/local/memory) |
 | `--dedup-chunks` | flag | No | Enable chunk-level deduplication for pakem payloads |
 | `--distributed-shards` | int | No | Total number of shards for distributed packing |
 | `--distributed-index` | int | No | Zero-based shard index for this run |
@@ -320,7 +320,7 @@ pakem diff --state STATE [--path PATH] [--out OUT] [--diff-out FILE]
 | `--dry-run` | flag | No | Analyze without writing package or diff output files |
 | `--focus-ranking` | enum | No | Ranking strategy used when token budget is constrained |
 | `--selection-report-out` | string | No | Optional JSON report with selected and skipped paths |
-| `--secret-scanner` | enum | No | Secret scanner integration mode (`builtin|gitleaks|trufflehog|auto|off`) |
+| `--secret-scanner` | enum | No | Secret scanner integration mode (builtin/gitleaks/trufflehog/auto/off) |
 
 Constraint semantics:
 
