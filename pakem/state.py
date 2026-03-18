@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -92,7 +93,17 @@ class RepoState:
 
 def compute_file_hash(path: str, chunk_size: int = 8192) -> str:
     hasher = hashlib.sha256()
+    file_path = Path(path)
+    size = file_path.stat().st_size if file_path.exists() else 0
     with open(path, "rb") as f:
+        if size >= 1024 * 1024:
+            try:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    hasher.update(mm)
+                    return hasher.hexdigest()
+            except Exception:
+                pass
+
         while True:
             chunk = f.read(chunk_size)
             if not chunk:

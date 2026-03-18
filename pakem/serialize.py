@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import struct
@@ -8,6 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol, TextIO
 
 from pakem.analyze import FileMetadata
+from pakem.cloud_io import write_bytes, write_text
 
 
 class Serializer(Protocol):
@@ -22,7 +25,12 @@ class Serializer(Protocol):
         pass
 
     def update_repository_totals(
-        self, total_files: int, total_size: int, total_tokens: int
+        self,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+        total_content_size: int = 0,
+        total_artifact_size: int = 0,
     ) -> None:
         pass
 
@@ -45,7 +53,7 @@ class Serializer(Protocol):
     ) -> None:
         pass
 
-    def write_to(self, output_path: str) -> None:
+    def write_to(self, output_path: str) -> int:
         pass
 
 
@@ -112,7 +120,12 @@ class XmlSerializer:
             )
 
     def update_repository_totals(
-        self, total_files: int, total_size: int, total_tokens: int
+        self,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+        total_content_size: int = 0,
+        total_artifact_size: int = 0,
     ) -> None:
         if not self.output_path or self._file is None:
             return
@@ -190,6 +203,15 @@ class XmlSerializer:
             file_attrs += f' hash="{metadata.sha256}"'
         if getattr(metadata, "status", None):
             file_attrs += f' status="{metadata.status}"'
+        if getattr(metadata, "git_commit", None):
+            file_attrs += f' git_commit="{metadata.git_commit}"'
+        if getattr(metadata, "git_author", None):
+            file_attrs += f' git_author="{metadata.git_author}"'
+        if getattr(metadata, "git_date", None):
+            file_attrs += f' git_date="{metadata.git_date}"'
+        if getattr(metadata, "summary", None):
+            safe_summary = str(metadata.summary).replace('"', "'")
+            file_attrs += f' summary="{safe_summary}"'
 
         if self.output_path and self._file:
             self._file.write(f"{indent}<file {file_attrs}>\n")
@@ -217,15 +239,15 @@ class XmlSerializer:
         else:
             self.lines.append(f"{indent}</file>\n")
 
-    def write_to(self, output_path: str) -> None:
+    def write_to(self, output_path: str) -> int:
         if self.output_path:
             if self._file:
                 self._file.flush()
                 self._file.close()
                 self._file = None
-            return
+            return Path(self.output_path).stat().st_size
 
-        Path(output_path).write_text("".join(self.lines), encoding="utf-8")
+        return write_text(output_path, "".join(self.lines), encoding="utf-8")
 
 
 class JsonSerializer:
@@ -252,11 +274,18 @@ class JsonSerializer:
         }
 
     def update_repository_totals(
-        self, total_files: int, total_size: int, total_tokens: int
+        self,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+        total_content_size: int = 0,
+        total_artifact_size: int = 0,
     ) -> None:
         self.repository["total_files"] = total_files
         self.repository["total_size"] = total_size
         self.repository["total_tokens"] = total_tokens
+        self.repository["total_content_size"] = total_content_size
+        self.repository["total_artifact_size"] = total_artifact_size
 
     def end_repository(self) -> None:
 
@@ -294,20 +323,26 @@ class JsonSerializer:
             record["hash"] = metadata.sha256
         if getattr(metadata, "status", None):
             record["status"] = metadata.status
+        if getattr(metadata, "git_commit", None):
+            record["git_commit"] = metadata.git_commit
+        if getattr(metadata, "git_author", None):
+            record["git_author"] = metadata.git_author
+        if getattr(metadata, "git_date", None):
+            record["git_date"] = metadata.git_date
+        if getattr(metadata, "summary", None):
+            record["summary"] = metadata.summary
 
         self.files.append(record)
 
-    def write_to(self, output_path: str) -> None:
+    def write_to(self, output_path: str) -> int:
         payload = {
             "repository": self.repository,
             "directories": self.directories,
             "files": self.files,
         }
 
-        Path(output_path).write_text(
-            __import__("json").dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        text = __import__("json").dumps(payload, indent=2, ensure_ascii=False)
+        return write_text(output_path, text, encoding="utf-8")
 
 
 class ProtoSerializer:
@@ -334,7 +369,12 @@ class ProtoSerializer:
         self._message.total_tokens = total_tokens
 
     def update_repository_totals(
-        self, total_files: int, total_size: int, total_tokens: int
+        self,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+        total_content_size: int = 0,
+        total_artifact_size: int = 0,
     ) -> None:
         if self._message is None:
             return
@@ -381,16 +421,16 @@ class ProtoSerializer:
             f.status = metadata.status
         f.content.extend(content_lines)
 
-    def write_to(self, output_path: str) -> None:
+    def write_to(self, output_path: str) -> int:
         if self._message is None:
-            return
-        with open(output_path, "wb") as f:
-            f.write(self._message.SerializeToString())
+            return 0
+        data = self._message.SerializeToString()
+        return write_bytes(output_path, data)
 
 
 class PakemSerializer:
     MAGIC = b"PAKM"
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, output_path: str | None = None) -> None:
         self.output_path = output_path
@@ -400,6 +440,8 @@ class PakemSerializer:
         self._payload_parts: list[bytes] = []
         self._raw_bytes: bytes = b""
         self._split_size: int | None = None
+        self._signature_key: str | None = None
+        self._dedup_enabled: bool = False
 
     def start_repository(
         self,
@@ -419,11 +461,18 @@ class PakemSerializer:
         }
 
     def update_repository_totals(
-        self, total_files: int, total_size: int, total_tokens: int
+        self,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+        total_content_size: int = 0,
+        total_artifact_size: int = 0,
     ) -> None:
         self.repository["total_files"] = total_files
         self.repository["total_size"] = total_size
         self.repository["total_tokens"] = total_tokens
+        self.repository["total_content_size"] = total_content_size
+        self.repository["total_artifact_size"] = total_artifact_size
 
     def end_repository(self) -> None:
         return
@@ -461,6 +510,14 @@ class PakemSerializer:
             item["hash"] = metadata.sha256
         if getattr(metadata, "status", None):
             item["status"] = metadata.status
+        if getattr(metadata, "git_commit", None):
+            item["git_commit"] = metadata.git_commit
+        if getattr(metadata, "git_author", None):
+            item["git_author"] = metadata.git_author
+        if getattr(metadata, "git_date", None):
+            item["git_date"] = metadata.git_date
+        if getattr(metadata, "summary", None):
+            item["summary"] = metadata.summary
         self.files.append(item)
 
     def set_payload_bytes(self, payload: bytes) -> None:
@@ -473,8 +530,57 @@ class PakemSerializer:
             if index < len(self.files):
                 self.files[index]["payload_length"] = len(part)
 
+    def set_payload_transform_info(self, info: dict[str, str]) -> None:
+        if not isinstance(info, dict):
+            return
+        for key, value in info.items():
+            self.repository[key] = value
+
     def set_split_size(self, split_size: int | None) -> None:
         self._split_size = split_size if split_size and split_size > 0 else None
+
+    def set_dedup_enabled(self, enabled: bool) -> None:
+        self._dedup_enabled = bool(enabled)
+
+    def apply_payload_chunk_map(
+        self, chunk_map: dict[str, tuple[int, int]]
+    ) -> None:
+        if not chunk_map:
+            return
+        for item in self.files:
+            rel = str(item.get("path", ""))
+            mapping = chunk_map.get(rel)
+            if not mapping:
+                continue
+            offset, length = mapping
+            item["payload_offset"] = int(offset)
+            item["payload_length"] = int(length)
+
+    def set_archive_negotiation(
+        self,
+        min_reader_version: int,
+        max_reader_version: int,
+        features: list[str] | None = None,
+    ) -> None:
+        self.repository["min_reader_version"] = int(min_reader_version)
+        self.repository["max_reader_version"] = int(max_reader_version)
+        self.repository["features"] = list(features or [])
+
+    def set_signature_key(self, key: str | None) -> None:
+        self._signature_key = key
+
+    def _canonical_signature_payload(
+        self, metadata: dict[str, Any], payload: bytes
+    ) -> bytes:
+        clone = json.loads(json.dumps(metadata))
+        repository = clone.get("repository", {})
+        if isinstance(repository, dict):
+            repository.pop("signature", None)
+            repository.pop("signature_profile", None)
+        stable = json.dumps(
+            clone, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return stable + payload
 
     def _build(self) -> bytes:
         payload = (
@@ -488,6 +594,17 @@ class PakemSerializer:
             "files": self.files,
             "payload_size": len(payload),
         }
+
+        if self._signature_key:
+            signature = hmac.new(
+                self._signature_key.encode("utf-8", errors="replace"),
+                self._canonical_signature_payload(metadata, payload),
+                hashlib.sha256,
+            ).hexdigest()
+            self.repository["signature_profile"] = "hmac-sha256"
+            self.repository["signature"] = signature
+            metadata["repository"] = self.repository
+
         metadata_bytes = json.dumps(metadata, ensure_ascii=False).encode(
             "utf-8"
         )
@@ -499,17 +616,107 @@ class PakemSerializer:
             + payload
         )
 
-    def write_to(self, output_path: str) -> None:
+    def write_to(self, output_path: str) -> int:
         blob = self._build()
-        out = Path(output_path)
         if self._split_size and len(blob) > self._split_size:
             index = 1
             offset = 0
+            total_written = 0
             while offset < len(blob):
                 part = blob[offset : offset + self._split_size]
-                part_path = out.with_suffix(out.suffix + f".part{index:03d}")
-                part_path.write_bytes(part)
+                part_path = f"{output_path}.part{index:03d}"
+                write_bytes(part_path, part)
+                total_written += len(part)
                 offset += self._split_size
                 index += 1
-            return
-        out.write_bytes(blob)
+            return total_written
+        return write_bytes(output_path, blob)
+
+
+class LlmPromptSerializer:
+    def __init__(self, output_path: str | None = None) -> None:
+        self.output_path = output_path
+        self.repository: dict[str, Any] = {}
+        self.files: list[dict[str, Any]] = []
+
+    def start_repository(
+        self,
+        root: str,
+        timestamp: str,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+    ) -> None:
+        self.repository = {
+            "root": root,
+            "timestamp": timestamp,
+            "total_files": total_files,
+            "total_size": total_size,
+            "total_tokens": total_tokens,
+        }
+
+    def update_repository_totals(
+        self,
+        total_files: int,
+        total_size: int,
+        total_tokens: int,
+        total_content_size: int = 0,
+        total_artifact_size: int = 0,
+    ) -> None:
+        self.repository["total_files"] = total_files
+        self.repository["total_size"] = total_size
+        self.repository["total_tokens"] = total_tokens
+        self.repository["total_content_size"] = total_content_size
+        self.repository["total_artifact_size"] = total_artifact_size
+
+    def end_repository(self) -> None:
+        return
+
+    def start_directory(self, name: str, rel_path: str, depth: int) -> None:
+        return
+
+    def end_directory(self, depth: int) -> None:
+        return
+
+    def add_file(
+        self,
+        name: str,
+        rel_path: str,
+        metadata: FileMetadata,
+        content_lines: Iterable[str],
+        depth: int,
+    ) -> None:
+        self.files.append(
+            {
+                "name": name,
+                "path": rel_path,
+                "tokens": metadata.tokens,
+                "summary": getattr(metadata, "summary", None),
+                "content": list(content_lines),
+            }
+        )
+
+    def write_to(self, output_path: str) -> int:
+        lines: list[str] = []
+        lines.append("# LLM Prompt Profile")
+        lines.append("")
+        lines.append(f"Root: {self.repository.get('root', '')}")
+        lines.append(f"Timestamp: {self.repository.get('timestamp', '')}")
+        lines.append(f"Total files: {self.repository.get('total_files', 0)}")
+        lines.append(f"Total tokens: {self.repository.get('total_tokens', 0)}")
+        lines.append("")
+
+        ordered = sorted(self.files, key=lambda item: str(item.get("path", "")))
+        for item in ordered:
+            lines.append(f"## File: {item['path']}")
+            lines.append(f"Tokens: {item.get('tokens', 0)}")
+            summary = item.get("summary")
+            if summary:
+                lines.append(f"Summary: {summary}")
+            lines.append("```")
+            lines.extend(item.get("content", []))
+            lines.append("```")
+            lines.append("")
+
+        text = "\n".join(lines).rstrip() + "\n"
+        return write_text(output_path, text, encoding="utf-8")

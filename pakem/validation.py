@@ -163,7 +163,7 @@ def validate_pakem(path: str) -> None:
     if data[:4] != b"PAKM":
         raise ValueError("Invalid pakem magic")
     version = data[4]
-    if version != 1:
+    if version not in {1, 2}:
         raise ValueError("Unsupported pakem version")
     header_len = struct.unpack(">I", data[5:9])[0]
     metadata_end = 9 + header_len
@@ -174,6 +174,13 @@ def validate_pakem(path: str) -> None:
         raise ValueError("pakem metadata must be a dict")
     if "repository" not in metadata or "files" not in metadata:
         raise ValueError("pakem metadata missing required keys")
+
+    repository = metadata.get("repository", {})
+    if isinstance(repository, dict):
+        min_reader = int(repository.get("min_reader_version", 1))
+        max_reader = int(repository.get("max_reader_version", 2))
+        if min_reader > max_reader:
+            raise ValueError("Invalid archive reader negotiation metadata")
 
 
 def is_path_safe(base_dir: str, target_path: str) -> bool:

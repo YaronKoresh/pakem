@@ -2,9 +2,19 @@ __version__ = "2.0.0"
 
 from pakem.analyze import FileMetadata, analyze_text, count_tokens, is_binary
 from pakem.cli import main
-from pakem.commands import BaseCommand, DiffCommand, PackCommand, RestoreCommand
+from pakem.commands import (
+    ArchiveDiffCommand,
+    BaseCommand,
+    DiffCommand,
+    ExploreCommand,
+    PackCommand,
+    RestoreCommand,
+    SetupPrecommitCommand,
+)
 from pakem.ignore import IgnoreRules
+from pakem.loaders import PakemLangChainLoader, PakemLlamaIndexReader
 from pakem.packer import RepoPacker
+from pakem.policy import PackagingPolicy
 from pakem.serialize import XmlSerializer
 from pakem.tokenizer import (
     DEFAULT_TOKEN_COUNTER,
@@ -28,4 +38,10 @@ __all__ = [
     "PackCommand",
     "DiffCommand",
     "RestoreCommand",
+    "PackagingPolicy",
+    "ArchiveDiffCommand",
+    "ExploreCommand",
+    "SetupPrecommitCommand",
+    "PakemLangChainLoader",
+    "PakemLlamaIndexReader",
 ]
