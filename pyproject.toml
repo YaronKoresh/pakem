@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pakem"
-version = "1.0.0"
+version = "2.0.0"
 description = "A repository packer that generates XML representations of codebases"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
@@ -33,11 +33,18 @@ dev = [
     "ruff>=0.15.1",
     "poethepoet",
     "pre-commit",
-    "build"
+    "build",
+    "vulture>=2.10",
+]
+
+extra = [
+    "pathspec>=0.11.0",
+    "tiktoken>=0.4.0",
+    "protobuf>=4.0.0",
 ]
 
 [project.scripts]
-pakem = "pakem.core:main"
+pakem = "pakem.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/YaronKoresh/pakem"
@@ -73,69 +80,40 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.poe.tasks]
-# Quality Assurance
-test = "pytest tests/"
-compile = { cmd = "python -m compileall -q ." }
-pre-commit = { cmd = "pre-commit run --all-files", env = { SKIP = "no-commit-to-branch" } }
-clean = { cmd = '''python -Bc "
-import pathlib, shutil;
-targets = {
-        'directories': {
-            '__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache',
-            '.tox', '.nox', '.cache', '.ipynb_checkpoints', 'htmlcov',
-            'build', 'dist', '.eggs', '*.egg-info', '.coverage.reports'
-        },
-        'files': {
-            '.coverage', '.coverage.*', '.sqlite', 'nosetests.xml',
-            'coverage.xml', '*.pyc', '*.pyo', '*.pyd', '.DS_Store'
-        }
-};
-for p in pathlib.Path('.').rglob('*'):
-        if p.name in targets['directories'] or any(p.match(pat) for pat in targets['directories']):
-            if p.is_dir(): shutil.rmtree(p, ignore_errors=True)
-        elif p.name in targets['files'] or any(p.match(pat) for pat in targets['files']):
-            if p.is_file(): p.unlink(missing_ok=True)
-"''' }
-strip-comments = { cmd = '''python -c "
-import tokenize
-import io
-import pathlib
+check = ["clean", "compile", "dead-code", "strip-comments", "pre-commit", "test", "clean"]
 
-def strip_comments_and_format(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8', newline='') as f:
-            source = f.read()
+[tool.poe.tasks.test]
+cmd = "pytest tests/"
 
-        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-        result = []
-        last_lineno = -1
-        last_col = 0
+[tool.poe.tasks.compile]
+cmd = "python -m compileall -q ."
 
-        for toktype, tokval, start, end, line in tokens:
-            if toktype == tokenize.COMMENT:
-                continue
+[tool.poe.tasks.lint]
+cmd = "ruff check ."
 
-            if toktype == tokenize.NL or toktype == tokenize.NEWLINE:
-                pass
+[tool.poe.tasks.pre-commit]
+cmd = "pre-commit run --all-files"
 
-            result.append((toktype, tokval, start, end, line))
-        cleaned = tokenize.untokenize(result)
+[tool.poe.tasks.pre-commit.env]
+SKIP = "no-commit-to-branch"
 
-        with open(file_path, 'w', encoding='utf-8', newline='') as f:
-            f.write(cleaned)
+[tool.poe.tasks.clean]
+cmd = "python scripts/clean_workspace.py"
 
-        print(f'Stripped and cleaned: {file_path}')
+[tool.poe.tasks.strip-comments]
+cmd = "python scripts/strip_comments.py"
 
-    except Exception as e:
-        print(f'Failed to process {file_path}: {e}')
+[tool.poe.tasks.build]
+cmd = "python -m build"
 
-for p in pathlib.Path('.').rglob('*.py'):
-    strip_comments_and_format(p)
-"''' }
-check = ["clean", "compile", "strip-comments", "pre-commit", "test", "clean"]
+[tool.poe.tasks.build-wheel]
+cmd = "python -m build --wheel"
 
-# Build Pipeline
-build = { cmd = "python -m build" }
+[tool.poe.tasks.hook]
+cmd = "pre-commit install"
 
-# Setup Task
-hook = { cmd = "pre-commit install" }
+[tool.poe.tasks.format]
+cmd = "ruff format ."
+
+[tool.poe.tasks.dead-code]
+cmd = "vulture pakem/ --min-confidence 80 --sort-by-size"
