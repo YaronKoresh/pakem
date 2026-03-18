@@ -17,6 +17,10 @@ class FileMetadata:
     extension: str
     sha256: str | None = None
     status: str | None = None
+    git_commit: str | None = None
+    git_author: str | None = None
+    git_date: str | None = None
+    summary: str | None = None
 
 
 def count_tokens(text: str | None, model: str | None = None) -> int:

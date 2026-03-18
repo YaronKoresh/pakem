@@ -43,27 +43,38 @@ It supports document-oriented outputs (`xml`, `json`, `proto`) and a binary arch
 
 | Use Case | Input | Output | Typical Consumer |
 |---|---|---|---|
-| LLM context packaging | Source repository | XML/JSON/Proto | Prompt pipelines, RAG preprocessors |
+| LLM context packaging | Source repository | XML/JSON/Proto/LLM Prompt | Prompt pipelines, RAG preprocessors |
 | Incremental repository snapshots | Source + state file | XML/JSON/Proto/Pakem + updated state | CI and scheduled jobs |
 | Change-only artifact generation | Source + previous state + `--delta` | Delta subset + diff manifest | Review and sync automation |
 | Archive and restore workflow | Source | `.pakem` (single or split) | Backup, transfer, migration |
+| Archive-to-archive change analysis | Two artifacts | Added/modified/removed report | Regression triage and release validation |
+| Cloud artifact transport | Local source + cloud URI (`s3://`, `gs://`, `az://`) | Artifact read/write over object storage | Remote backup and pipeline automation |
+| Archive inspection and reporting | Existing artifact(s) | TUI/plain explorer and HTML diff report | Release engineering and audits |
+| Ecosystem loaders | Existing artifact(s) | LangChain documents / LlamaIndex nodes | RAG and indexing services |
 | Ignore-rule diagnostics | Source + ignore patterns/files | Printed ignored list | Build engineering and DevEx |
 
 ---
 
 ## Capability Matrix
 
-| Capability | xml | json | proto | pakem |
-|---|---:|---:|---:|---:|
+| Capability | xml | json | proto | pakem | llm-prompt |
+|---|---:|---:|---:|---:|---:|
 | Full repository metadata | Yes | Yes | Yes | Yes |
-| File line-level content | Yes | Yes | Yes | Packed payload |
+| File line-level content | Yes | Yes | Yes | Packed payload | Structured prompt blocks |
 | Incremental state tracking (`--state`) | Yes | Yes | Yes | Yes |
 | Delta mode (`--delta`) | Yes | Yes | Yes | Yes |
 | Diff manifest output (`diff --diff-out`) | Yes | Yes | Yes | Yes |
-| Optional compression (`--compress zlib`) | No | No | No | Yes |
+| HTML diff report (`--html-diff-out` / `archive-diff --html-out`) | Yes | Yes | Yes | Yes |
+| Optional compression (`--compress zlib/zstd/lz4`) | No | No | No | Yes |
 | Optional reversible encryption (`--encrypt-key`) | No | No | No | Yes |
 | Optional split output (`--split-size`) | No | No | No | Yes |
-| Restore support (`restore`) | No | No | No | Yes |
+| Chunk-level dedup (`--dedup-chunks`) | No | No | No | Yes |
+| Restore support (`restore`) | No | No | No | Yes | No |
+| Semantic chunking (`--semantic-chunking`) | Yes | Yes | Yes | Yes | Yes |
+| Git tracked-files mode (`--tracked-files`) | Yes | Yes | Yes | Yes | Yes |
+| Distributed shard filtering (`--distributed-shards` + `--distributed-index`) | Yes | Yes | Yes | Yes | Yes |
+| Analysis cache mode (`--cache-mode`) | Yes | Yes | Yes | Yes | Yes |
+| Cloud URI output/input (`s3://`, `gs://`, `az://`) | Yes | Yes | Yes | Yes | Yes |
 
 ---
 
@@ -97,6 +108,9 @@ flowchart LR
     F -->|pack| G[PackCommand.execute]
     F -->|diff| H[DiffCommand.execute]
     F -->|restore| I[RestoreCommand.execute]
+    F -->|archive-diff| J[ArchiveDiffCommand.execute]
+    F -->|explore| K[ExploreCommand.execute]
+    F -->|setup-precommit| L[SetupPrecommitCommand.execute]
 ```
 
 ### Packing Execution Pipeline
@@ -125,8 +139,8 @@ flowchart TD
 
 | Stage | Input | Output | Invariants |
 |---|---|---|---|
-| Argument resolution | CLI options | `Namespace` | Subcommand is one of `pack`, `diff`, `restore` |
-| Output path resolution | `--out`, `--format` | concrete file path | If `--out` has no suffix, suffix is inferred by format |
+| Argument resolution | CLI options | `Namespace` | Subcommand is one of `pack`, `diff`, `restore`, `archive-diff`, `explore`, `setup-precommit` |
+| Output path resolution | `--out`, `--format` | concrete file path or cloud URI | If `--out` has no suffix, suffix is inferred by format |
 | File walk | root + ignore rules | `FileEntry` stream | Relative paths normalized to `/` |
 | Text analysis | file path | `FileMetadata` + content lines | Binary files are skipped |
 | State update | previous state + file hash | current state | Each processed text file gets deterministic state entry |
@@ -137,7 +151,7 @@ flowchart TD
 | Stage | Input | Output | Invariants |
 |---|---|---|---|
 | Artifact read | `.pakem` or split parts | bytes | Header must start with `PAKM` |
-| Header parse | artifact bytes | metadata JSON + payload bytes | Version byte must be `1` |
+| Header parse | artifact bytes | metadata JSON + payload bytes | Version byte must be supported by negotiation metadata |
 | Chunk reconstruction | payload stream + per-file lengths | file bytes | Transform reversal is inverse of transform order |
 | Write stage | `target_dir` + relative path | restored files | Path traversal outside target is rejected |
 
@@ -174,13 +188,19 @@ Extras currently include:
 | `pathspec` | Advanced gitignore-style pattern matching |
 | `tiktoken` | Model-aware token counting |
 | `protobuf` | Proto serializer support |
+| `dulwich` | Git-native tracked-files and metadata enrichment |
+| `zstandard` | zstd compression profile |
+| `lz4` | lz4 compression profile |
+| `fsspec` + cloud FS plugins (`s3fs`, `gcsfs`, `adlfs`) | Cloud URI read/write for artifacts and reports |
+| `langchain` | LangChain loader adapter |
+| `llama-index` | LlamaIndex reader adapter |
 
 ### Runtime Requirements
 
 | Requirement | Value |
 |---|---|
 | Python | `>=3.10` |
-| Project version | `1.0.0` |
+| Project version | `2.0.0` |
 | Entry point | `pakem = pakem.cli:main` |
 
 ---
@@ -199,7 +219,7 @@ If no subcommand is supplied, `pack` is implicitly used.
 ## `pack` Command
 
 ```bash
-pakem pack [--path PATH] [--out OUT] [--format {xml,json,proto,pakem}]
+pakem pack [--path PATH] [--out OUT] [--format {xml,json,proto,pakem,llm-prompt}]
 ```
 
 ### `pack` Options Table
@@ -209,18 +229,38 @@ pakem pack [--path PATH] [--out OUT] [--format {xml,json,proto,pakem}]
 | `--path` | string | `.` | Root directory to process |
 | `--out` | string | `repo` | Output path or base name |
 | `--ignore` | list[string] | none | Additional ignore patterns |
+| `--include` | list[string] | none | Allowlist patterns; only matching paths are considered |
+| `--tracked-files` | flag | `false` | Only include files tracked in git index |
+| `--git-metadata` | flag | `false` | Enrich file metadata with commit hash/author/date |
+| `--semantic-chunking` | flag | `false` | Preserve class/function boundaries when rendering file content |
+| `--summary-mode` | enum | `off` | Optional low-priority summarization mode |
+| `--plugin` | list[string] | none | Optional plugin module paths loaded before execution |
+| `--cache-mode` | enum | `off` | Analysis cache mode (`off|local|memory`) |
+| `--dedup-chunks` | flag | `false` | Enable chunk-level deduplication for pakem payloads |
+| `--distributed-shards` | int | none | Total number of shards for distributed packing |
+| `--distributed-index` | int | none | Zero-based shard index for this run |
 | `--ignore-file` | string | none | Path to extra ignore file |
 | `--state` | string | none | JSON state file path |
 | `--delta` | flag | `false` | Include only changed files |
+| `--max-file-size` | size | none | Skip files larger than this threshold (`512KB`, `10MB`, `1GB`) |
+| `--max-total-tokens` | int | none | Cap packaged token total across selected files |
+| `--dry-run` | flag | `false` | Analyze and report without writing package/state/report files |
+| `--focus-ranking` | enum | `basic` | Ranking strategy used when token budget is constrained |
 | `--list-ignored` | flag | `false` | Print ignored entries and exit |
 | `--model` | string | none | Tokenization model hint |
-| `--workers` | int | auto | Analysis worker count |
+| `--workers` | int | auto | Analysis worker count (positive integer) |
 | `--format` | enum | `xml` | Output format |
 | `--emit-schema` | string | none | Schema output path |
 | `--schema-format` | enum | `xml` | Schema format |
 | `--compress` | enum | `none` | pakem payload compression |
 | `--encrypt-key` | string | none | pakem reversible key |
-| `--split-size` | int | none | pakem split threshold in bytes |
+| `--cipher` | enum | `aes-gcm` | Encryption profile for pakem payload encryption |
+| `--sign-key` | string | none | Optional provenance signature key (`hmac-sha256`) |
+| `--split-size` | size | none | pakem split threshold (`1MB`, `512KB`, `2GB`) |
+| `--sensitive-data-policy` | enum | `off` | Sensitive data handling mode (`off|warn|redact|block`) |
+| `--secret-scanner` | enum | `builtin` | Secret scanner integration mode (`builtin|gitleaks|trufflehog|auto|off`) |
+| `--sensitive-report-out` | string | none | Optional JSON report output for sensitive-data findings |
+| `--selection-report-out` | string | none | Optional JSON report with selected and skipped paths |
 
 ### `pack` Examples
 
@@ -234,8 +274,17 @@ pakem pack --path ./repo --format json --out snapshot
 # Delta pack using state file
 pakem pack --path ./repo --state .pakem-state.json --delta --out delta-report
 
+# Focused pack with include allowlist and token budget
+pakem pack --path ./repo --include "src/**" --max-total-tokens 20000 --focus-ranking basic --out focused
+
+# Analysis-only pass with no artifact writes
+pakem pack --path ./repo --dry-run --max-file-size 1048576
+
 # pakem archive with payload transforms and splitting
 pakem pack --path ./repo --format pakem --compress zlib --encrypt-key key123 --split-size 1048576 --out archive
+
+# LLM prompt profile with semantic chunking
+pakem pack --path ./repo --format llm-prompt --semantic-chunking --summary-mode basic --out prompt
 ```
 
 ## `diff` Command
@@ -252,9 +301,52 @@ pakem diff --state STATE [--path PATH] [--out OUT] [--diff-out FILE]
 | `--path` | string | No | Root directory (default `.`) |
 | `--out` | string | No | Artifact output base/path |
 | `--diff-out` | string | No | JSON diff manifest output path |
+| `--html-diff-out` | string | No | HTML diff report output path |
 | `--ignore` | list[string] | No | Additional ignore patterns |
+| `--include` | list[string] | No | Allowlist patterns; only matching paths are considered |
+| `--tracked-files` | flag | No | Only include files tracked in git index |
+| `--git-metadata` | flag | No | Enrich file metadata with commit hash/author/date |
+| `--semantic-chunking` | flag | No | Preserve class/function boundaries when rendering file content |
+| `--summary-mode` | enum | No | Optional low-priority summarization mode |
+| `--plugin` | list[string] | No | Optional plugin module paths loaded before execution |
+| `--cache-mode` | enum | No | Analysis cache mode (`off|local|memory`) |
+| `--dedup-chunks` | flag | No | Enable chunk-level deduplication for pakem payloads |
+| `--distributed-shards` | int | No | Total number of shards for distributed packing |
+| `--distributed-index` | int | No | Zero-based shard index for this run |
 | `--ignore-file` | string | No | Extra ignore file |
 | `--format` | enum | No | Output format |
+| `--max-file-size` | size | No | Skip files larger than this threshold (`512KB`, `10MB`, `1GB`) |
+| `--max-total-tokens` | int | No | Cap packaged token total across selected files |
+| `--dry-run` | flag | No | Analyze without writing package or diff output files |
+| `--focus-ranking` | enum | No | Ranking strategy used when token budget is constrained |
+| `--selection-report-out` | string | No | Optional JSON report with selected and skipped paths |
+| `--secret-scanner` | enum | No | Secret scanner integration mode (`builtin|gitleaks|trufflehog|auto|off`) |
+
+Constraint semantics:
+
+- `--max-file-size` and `--max-total-tokens` define the selected scope.
+- Selected scope is used consistently for artifact content, persisted state entries, and `diff` output.
+- Runtime stats include skip counters for max-file-size and token-budget exclusions.
+- `--selection-report-out` emits selected paths and skip reasons for automation and audits.
+- Size arguments accept case-insensitive suffixes: `B`, `KB`, `MB`, `GB`, `TB`.
+
+State backend semantics:
+
+- File backend (default): pass a normal path to `--state`.
+- Memory backend: `--state memory://<key>`.
+- SQLite backend: `--state sqlite:///path/to/state.db?key=<state-key>`.
+
+Archive negotiation and provenance:
+
+- pakem archives include `min_reader_version` and `max_reader_version` metadata.
+- Optional signatures use `--sign-key` during pack and `--verify-signature-key` during restore.
+- Restore rejects signature mismatches and incompatible negotiation ranges.
+
+Pack option compatibility:
+
+- `--compress`, `--encrypt-key`, and `--split-size` are valid only with `--format pakem`.
+- `--cipher` customization is valid only with `--format pakem`.
+- `--cipher none` cannot be combined with `--encrypt-key`.
 
 ### `diff` Output Schema
 
@@ -271,7 +363,7 @@ If `--diff-out` is provided, JSON shape is:
 ## `restore` Command
 
 ```bash
-pakem restore --in ARCHIVE --target TARGET [--format pakem] [--compress {none,zlib}] [--encrypt-key KEY]
+pakem restore --in ARCHIVE --target TARGET [--format pakem] [--compress {none,zlib,zstd,lz4}] [--encrypt-key KEY]
 ```
 
 ### `restore` Notes
@@ -279,6 +371,30 @@ pakem restore --in ARCHIVE --target TARGET [--format pakem] [--compress {none,zl
 - Supports `.pakem` artifacts and split sequences (`.pakem.part001`, `.part002`, ...).
 - Uses metadata `payload_length` values to reconstruct file payload boundaries.
 - Rejects writes that resolve outside `--target`.
+
+## `archive-diff` Command
+
+```bash
+pakem archive-diff --left OLD --right NEW [--left-format FMT] [--right-format FMT] [--out OUT] [--html-out REPORT.html]
+```
+
+Produces deterministic added/modified/removed results without scanning a live repository.
+
+## `explore` Command
+
+```bash
+pakem explore --in ARCHIVE [--tui]
+```
+
+Inspects archive entries either with plain terminal output or a curses-based TUI (`--tui`).
+
+## `setup-precommit` Command
+
+```bash
+pakem setup-precommit [--path PATH] [--force]
+```
+
+Generates `.pre-commit-config.yaml` with `ruff`, `ruff-format`, and a local `poe check` hook.
 
 ---
 
@@ -294,6 +410,7 @@ When `--out` has no suffix:
 | `json` | `.json` |
 | `proto` | `.pb` |
 | `pakem` | `.pakem` |
+| `llm-prompt` | `.prompt.md` |
 
 If `--out` already has a suffix, it is preserved.
 
@@ -312,7 +429,7 @@ Protobuf uses dynamic message generation from `pakem.proto` descriptor construct
 | Segment | Size | Description |
 |---|---:|---|
 | Magic | 4 bytes | ASCII `PAKM` |
-| Version | 1 byte | Current value: `1` |
+| Version | 1 byte | Current value: `2` |
 | Header length | 4 bytes (big-endian) | Byte length of metadata JSON |
 | Metadata | variable | UTF-8 JSON with repository/file descriptors |
 | Payload | variable | Concatenated file payload chunks |
@@ -389,11 +506,9 @@ Restore requires `pakem` format and follows this inversion logic:
 
 ## Important Cryptography Note
 
-Current `--encrypt-key` implementation uses a reversible XOR stream transformation for payload obfuscation and deterministic reversibility.
+Default encryption profiles are authenticated encryption (`aes-gcm` and `chacha20-poly1305`) with metadata-bound authentication.
 
-This is not a modern authenticated encryption scheme.
-
-Use it only where lightweight reversible transformation is acceptable, and prefer transport/storage controls for strong security requirements.
+Legacy reversible xor mode is available only under explicit legacy mode for restoration compatibility paths.
 
 ---
 
@@ -418,6 +533,8 @@ Guidance:
 | Binary file prevalence | More binaries means faster total run due to skip behavior |
 | Tokenizer backend | `tiktoken` can improve model parity; regex fallback avoids dependency |
 | State availability | Existing state can reduce expensive hash recompute paths |
+| Analysis cache mode | `local` and `memory` cache reduce repeated analysis work |
+| mmap hashing | Large-file hashing uses mmap when available for lower memory churn |
 | Pakem transforms | Compression and encryption increase CPU load |
 
 ## Flowchart: Performance Path
@@ -603,7 +720,7 @@ python -c "from pakem.validation import validate; validate('archive.pakem', 'pak
 | Module | Responsibility | Key Types/Functions |
 |---|---|---|
 | `pakem/cli.py` | Argument parsing and subcommand routing | `main`, `resolve_output_path` |
-| `pakem/commands.py` | Command execution adapters | `PackCommand`, `DiffCommand`, `RestoreCommand` |
+| `pakem/commands.py` | Command execution adapters | `PackCommand`, `DiffCommand`, `RestoreCommand`, `ArchiveDiffCommand`, `ExploreCommand`, `SetupPrecommitCommand` |
 | `pakem/packer.py` | Core orchestration pipeline | `RepoPacker.pack`, `RepoPacker.diff`, `RepoPacker.restore` |
 | `pakem/fs.py` | Deterministic file traversal | `FileWalker`, `FileEntry` |
 | `pakem/ignore.py` | Ignore pattern loading and matching | `IgnoreRules` |
@@ -611,6 +728,12 @@ python -c "from pakem.validation import validate; validate('archive.pakem', 'pak
 | `pakem/tokenizer.py` | Token counting backends | `RegexTokenCounter`, `TiktokenTokenCounter` |
 | `pakem/state.py` | Incremental file state and diffs | `RepoState`, `FileState`, `diff_paths` |
 | `pakem/serialize.py` | XML/JSON/Proto/Pakem serializers | `XmlSerializer`, `JsonSerializer`, `ProtoSerializer`, `PakemSerializer` |
+| `pakem/cloud_io.py` | Local/cloud read-write abstraction | `read_bytes`, `write_text`, `write_bytes` |
+| `pakem/cache.py` | Analysis cache backends | `AnalysisCache`, `create_cache` |
+| `pakem/plugins.py` | Runtime plugin loading | `load_plugins`, `register_analyzer` |
+| `pakem/reports.py` | HTML reporting | `render_html_diff_report` |
+| `pakem/loaders.py` | Ecosystem data loaders | `PakemLangChainLoader`, `PakemLlamaIndexReader` |
+| `pakem/tui.py` | Archive exploration UI | `explore_archive` |
 | `pakem/validation.py` | Artifact validation and path safety | `validate`, `validate_pakem`, `is_path_safe` |
 | `pakem/proto.py` | Dynamic protobuf schema descriptor | `get_repository_message_class` |
 
