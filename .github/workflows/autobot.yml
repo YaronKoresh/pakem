@@ -389,6 +389,7 @@ jobs:
             const isPR = context.eventName === 'pull_request';
             const MIN_RELEASE_SIZE = 3;
             const MAX_AI_LABELS = 6;
+            const URGENT_SYNC_LABELS = ['breaking-change', 'security'];
             const VERSION_SENSITIVE_LABELS = ['breaking-change', 'enhancement', 'security', 'bug', 'performance', 'api', 'database', 'schema', 'compatibility', 'migration', 'feature-flag', 'runtime'];
             const VERSION_LABEL_ALIASES = { 'breaking-changes': 'breaking-change', 'breaking_change': 'breaking-change' };
             const FORCE_RELEASE_TYPES = ['enhancement', 'breaking-change', 'security'];
@@ -517,15 +518,59 @@ jobs:
               if (bumpType === 'patch') return formatVersionTag({ major: parsed.major, minor: parsed.minor, patch: parsed.patch + 1 });
               return formatVersionTag(parsed);
             }
+            function compareVersions(left, right) {
+              const a = parseVersionTag(left);
+              const b = parseVersionTag(right);
+              if (a.major !== b.major) return a.major > b.major ? 1 : -1;
+              if (a.minor !== b.minor) return a.minor > b.minor ? 1 : -1;
+              if (a.patch !== b.patch) return a.patch > b.patch ? 1 : -1;
+              return 0;
+            }
+            function parseMilestoneMetadata(description) {
+              const text = String(description || '');
+              const baseMatch = text.match(/autobot-base:(v\d+\.\d+\.\d+)/i);
+              const managedMatch = text.match(/autobot-managed-title:(v\d+\.\d+\.\d+)/i);
+              return {
+                baseVersion: baseMatch ? baseMatch[1] : null,
+                managedTitle: managedMatch ? managedMatch[1] : null
+              };
+            }
+            function buildMilestoneMetadataDescription(description, baseVersion, managedTitle) {
+              const rows = String(description || '')
+                .split(/\r?\n/)
+                .filter((line) => !/^autobot-base:v\d+\.\d+\.\d+$/i.test(line.trim()) && !/^autobot-managed-title:v\d+\.\d+\.\d+$/i.test(line.trim()));
+              if (baseVersion) rows.push(`autobot-base:${baseVersion}`);
+              if (managedTitle) rows.push(`autobot-managed-title:${managedTitle}`);
+              return rows.join('\n').trim();
+            }
+            async function getLatestPublishedVersion() {
+              try {
+                const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+                const published = releases
+                  .filter((release) => !release.draft && !release.prerelease)
+                  .map((release) => String(release.tag_name || '').trim())
+                  .filter((tag) => /^v?\d+\.\d+\.\d+$/.test(tag));
+                if (published.length === 0) return null;
+                return published.reduce((maxTag, currentTag) => compareVersions(currentTag, maxTag) > 0 ? currentTag : maxTag, published[0]);
+              } catch (e) {
+                return null;
+              }
+            }
             async function ensureMilestoneBaseVersion(milestone) {
               const description = String(milestone.description || '');
-              const markerMatch = description.match(/autobot-base:(v\d+\.\d+\.\d+)/i);
-              const baseVersion = markerMatch ? markerMatch[1] : formatVersionTag(parseVersionTag(milestone.title));
-              if (markerMatch) return { baseVersion, milestone };
-              const marker = `autobot-base:${baseVersion}`;
-              const nextDescription = description.trim() ? `${description.trim()}\n\n${marker}` : marker;
+              const metadata = parseMilestoneMetadata(description);
+              const latestPublished = await getLatestPublishedVersion();
+              const baseVersion = metadata.baseVersion
+                ? metadata.baseVersion
+                : (latestPublished ? formatVersionTag(parseVersionTag(latestPublished)) : formatVersionTag(parseVersionTag(milestone.title)));
+              const managedTitle = metadata.managedTitle || formatVersionTag(parseVersionTag(milestone.title));
+              const manualTitleLocked = Boolean(metadata.managedTitle && compareVersions(formatVersionTag(parseVersionTag(milestone.title)), metadata.managedTitle) !== 0);
+              const nextDescription = buildMilestoneMetadataDescription(description, baseVersion, managedTitle);
+              if (nextDescription === description.trim()) {
+                return { baseVersion, managedTitle, manualTitleLocked, hadManagedMarker: Boolean(metadata.managedTitle), milestone };
+              }
               const updated = await github.rest.issues.updateMilestone({ owner, repo, milestone_number: milestone.number, description: nextDescription });
-              return { baseVersion, milestone: updated.data };
+              return { baseVersion, managedTitle, manualTitleLocked, hadManagedMarker: Boolean(metadata.managedTitle), milestone: updated.data };
             }
             async function ensureLabelExists(name) {
               try { await github.rest.issues.getLabel({ owner, repo, name }); }
@@ -593,9 +638,19 @@ jobs:
               const aiLabelsRaw = process.env.AI_LABELS_RAW || '';
               const aiSummaryForComment = aiSummary.replace(/\nEND_OF_REPORT\s*$/m, '').trim();
               const existingBotComment = isPR ? await getExistingBotComment() : null;
-              const previousBotLabels = existingBotComment ? (extractBotMetadata(existingBotComment.body).aiLabels || []) : [];
+              const previousBotLabels = existingBotComment ? (extractBotMetadata(existingBotComment.body).aiLabels || []).map(normalizeLabelName) : [];
               let nextAiLabels = [];
-              if (isPR && aiLabelsRaw) nextAiLabels = trimLowSignalLabels(parseAILabels(aiLabelsRaw)).slice(0, MAX_AI_LABELS);
+              if (isPR && aiLabelsRaw) {
+                const predictedLabels = trimLowSignalLabels(parseAILabels(aiLabelsRaw)).slice(0, MAX_AI_LABELS);
+                if (payload.action === 'synchronize') {
+                  const previousSet = new Set(previousBotLabels);
+                  const predictedSet = new Set(predictedLabels);
+                  const urgentAdds = URGENT_SYNC_LABELS.filter((label) => predictedSet.has(label));
+                  nextAiLabels = [...new Set([...previousSet, ...urgentAdds])].slice(0, MAX_AI_LABELS);
+                } else {
+                  nextAiLabels = predictedLabels;
+                }
+              }
               const labelsToRemove = previousBotLabels.filter(label => !nextAiLabels.includes(label));
               const labelsToAdd = nextAiLabels.filter(label => !previousBotLabels.includes(label));
               for (const label of labelsToRemove) {
@@ -630,6 +685,7 @@ jobs:
                 }
                 return;
               }
+              const issueHadMilestoneBeforeAutobot = Boolean(freshIssue.data.milestone);
               const milestone = await getOrCreateMilestone();
               if (!freshIssue.data.milestone) await github.rest.issues.update({ owner, repo, issue_number: issueNumber, milestone: milestone.number });
               const items = await github.paginate(github.rest.issues.listForRepo, { owner, repo, milestone: milestone.number, state: 'all' });
@@ -641,15 +697,19 @@ jobs:
                 if (!alreadyAlerted) await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: `🚨 **MAJOR RELEASE ALERT** 🚨\n\n@${owner} This PR triggers a **major** version bump due to breaking changes detected by AI analysis.` });
               }
               const milestoneWithBase = await ensureMilestoneBaseVersion(milestone);
+              const shouldRespectManualMilestone = milestoneWithBase.manualTitleLocked || (issueHadMilestoneBeforeAutobot && !milestoneWithBase.hadManagedMarker);
+              if (shouldRespectManualMilestone) return;
               const releaseBump = releaseItems.reduce((bump, item) => {
                 const itemLabels = item.labels.map(label => normalizeLabelName(label.name));
                 const itemBump = bumpForLabels(itemLabels);
                 return maxBump(bump, itemBump);
               }, 'none');
               const requiredBump = releaseBump === 'none' && releaseItems.length > 0 ? 'patch' : releaseBump;
-              const newTitle = computeTargetVersion(milestoneWithBase.baseVersion, requiredBump);
+              const computedTitle = computeTargetVersion(milestoneWithBase.baseVersion, requiredBump);
+              const newTitle = compareVersions(computedTitle, milestoneWithBase.milestone.title) > 0 ? computedTitle : milestoneWithBase.milestone.title;
               if (newTitle !== milestoneWithBase.milestone.title) {
-                await github.rest.issues.updateMilestone({ owner, repo, milestone_number: milestone.number, title: newTitle, description: milestoneWithBase.milestone.description || milestone.description || '' });
+                const metadataDescription = buildMilestoneMetadataDescription(milestoneWithBase.milestone.description || milestone.description || '', milestoneWithBase.baseVersion, newTitle);
+                await github.rest.issues.updateMilestone({ owner, repo, milestone_number: milestone.number, title: newTitle, description: metadataDescription });
               }
             }
             if (payload.action === 'closed') {
