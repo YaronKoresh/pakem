@@ -571,6 +571,7 @@ flowchart TD
 | Goal | Command |
 |---|---|
 | Run tests | `pytest -q` |
+| Run Autobot script tests | `node --test tests/autobot_scripts.test.js` |
 | Run linter | `ruff check .` |
 | Compile check | `python -m compileall -q .` |
 | All checks (poe) | `poe check` |
@@ -747,6 +748,7 @@ python -c "from pakem.validation import validate; validate('archive.pakem', 'pak
 pip install -e ".[dev,extra]"
 ruff check .
 pytest -q
+node --test tests/autobot_scripts.test.js
 ```
 
 ## Suggested Pull Request Checklist

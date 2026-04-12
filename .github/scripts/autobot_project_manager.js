@@ -3,22 +3,24 @@ const fs = require("fs");
 const { analyzeIssueIntake } = require("./autobot_issue_intake");
 
 const {
+  AutobotLabelRegistry,
   FORCE_RELEASE_TYPES,
   LABEL_DEFINITIONS,
-  RELEASE_RELEVANT_LABELS,
-  SECONDARY_LABELS,
+  MAX_AUTOBOT_LABELS,
   VERSION_BUMP_BY_LABEL,
-  VERSION_LABEL_ALIASES,
-  VERSION_SENSITIVE_LABELS
+  hasReleaseRelevantLabel,
+  labelNamesFromIssue,
+  normalizeLabelName,
+  parseAutobotLabels,
+  trimLowSignalLabels,
+  uniqueValidLabels
 } = require("./autobot_labels");
 
 const MIN_RELEASE_SIZE = 3;
-const MAX_AUTOBOT_LABELS = 12;
 const BUMP_ORDER = { none: 0, patch: 1, minor: 2, major: 3 };
 const BOT_COMMENT_SIGNATURE = "<!-- autobot-summary -->";
 const LEGACY_BOT_COMMENT_SIGNATURE = "<!-- autobot-ai-summary -->";
 const MILESTONE_COMMENT_SIGNATURE = "<!-- autobot-milestone-update -->";
-const VALID_LABELS = new Set(Object.keys(LABEL_DEFINITIONS));
 
 function readState(stateFile) {
   return JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -26,38 +28,6 @@ function readState(stateFile) {
 
 function writeState(stateFile, value) {
   fs.writeFileSync(stateFile, JSON.stringify(value), "utf8");
-}
-
-function normalizeLabelName(label) {
-  const normalized = String(label || "").trim().toLowerCase();
-  return VERSION_LABEL_ALIASES[normalized] || normalized;
-}
-
-function hasLabelName(labels, expectedLabel) {
-  return (labels || []).some((label) => {
-    const labelName = typeof label === "string" ? label : label?.name;
-    return normalizeLabelName(labelName) === expectedLabel;
-  });
-}
-
-function hasReleaseRelevantLabel(labels) {
-  return RELEASE_RELEVANT_LABELS.some((label) => hasLabelName(labels, label));
-}
-
-function uniqueValidLabels(labels) {
-  return [...new Set((labels || []).map((label) => normalizeLabelName(label)).filter((label) => VALID_LABELS.has(label)))];
-}
-
-function trimLowSignalLabels(labels) {
-  if (labels.length <= 3) return labels;
-  const uniqueLabels = uniqueValidLabels(labels);
-  const versionCritical = VERSION_SENSITIVE_LABELS.filter((label) => uniqueLabels.includes(label));
-  const primary = uniqueLabels.filter((label) => !SECONDARY_LABELS.includes(label) && !versionCritical.includes(label));
-  const secondary = uniqueLabels.filter((label) => SECONDARY_LABELS.includes(label));
-  const cappedPrimary = [...versionCritical, ...primary].slice(0, MAX_AUTOBOT_LABELS);
-  const remainingSlots = Math.max(MAX_AUTOBOT_LABELS - cappedPrimary.length, 0);
-  const cappedSecondary = secondary.slice(0, remainingSlots);
-  return [...cappedPrimary, ...cappedSecondary].slice(0, MAX_AUTOBOT_LABELS);
 }
 
 function parseVersionTag(rawVersion) {
@@ -156,21 +126,6 @@ function buildMilestoneMetadataDescription(description, baseVersion, managedTitl
   return rows.join("\n").trim();
 }
 
-function parseAutobotLabels(raw) {
-  if (!raw) return [];
-  try {
-    const cleaned = String(raw).replace(/```json\s*/gi, "").replace(/```\s*/gi, "").trim();
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) {
-      return [...new Set(parsed.map((label) => normalizeLabelName(label)).filter((label) => VALID_LABELS.has(label)))];
-    }
-  } catch (error) {
-    const lines = String(raw).replace(/[\[\]"'`]/g, "").split(/[,\n]/).map((label) => normalizeLabelName(label)).filter((label) => VALID_LABELS.has(label));
-    return [...new Set(lines)];
-  }
-  return [];
-}
-
 function resolvePrLabelDelta(input) {
   const { action, previousBotLabels, currentPrLabels, autobotLabelsRaw } = input;
   const previousLabels = uniqueValidLabels(previousBotLabels);
@@ -202,15 +157,11 @@ function resolvePrLabelDelta(input) {
   };
 }
 
-function labelNamesFromIssue(issue) {
-  return uniqueValidLabels((issue?.labels || []).map((label) => typeof label === "string" ? label : label.name));
-}
-
 function inferIssueLabels(issue) {
   return analyzeIssueIntake(issue)
     .labels
     .map((label) => normalizeLabelName(label))
-    .filter((label) => VALID_LABELS.has(label));
+    .filter((label) => AutobotLabelRegistry.VALID_LABELS.has(label));
 }
 
 function issueFallbackSupportLabels(issue) {
@@ -257,16 +208,11 @@ async function getExistingBotComment({ github, owner, repo, issueNumber }) {
   return comments.find((comment) => comment.user.type === "Bot" && isManagedBotCommentBody(comment.body));
 }
 
-async function getExistingBotCommentForIssue({ github, owner, repo, issueNumber }) {
-  const comments = await getComments({ github, owner, repo, issueNumber });
-  return comments.find((comment) => comment.user.type === "Bot" && isManagedBotCommentBody(comment.body));
-}
-
 async function getBotMetadataForIssue({ github, owner, repo, issueNumber, metadataCache }) {
   if (metadataCache?.has(issueNumber)) {
     return metadataCache.get(issueNumber);
   }
-  const existingBotComment = await getExistingBotCommentForIssue({ github, owner, repo, issueNumber });
+  const existingBotComment = await getExistingBotComment({ github, owner, repo, issueNumber });
   const metadata = existingBotComment ? extractBotMetadata(existingBotComment.body) : {};
   if (metadataCache) {
     metadataCache.set(issueNumber, metadata);
@@ -538,7 +484,7 @@ async function selectivelyConsolidateSupersededMilestones({ github, owner, repo,
         metadataCache
       });
       if (BUMP_ORDER[itemBump] > BUMP_ORDER[targetBump]) continue;
-      const existingBotCommentForItem = await getExistingBotCommentForIssue({ github, owner, repo, issueNumber: item.number });
+      const existingBotCommentForItem = await getExistingBotComment({ github, owner, repo, issueNumber: item.number });
       if (!existingBotCommentForItem) continue;
       await github.rest.issues.update({ owner, repo, issue_number: item.number, milestone: targetMilestone.number });
       migratedPullRequests.push({ number: item.number, title: item.title, fromMilestone: milestone.title });
@@ -870,7 +816,62 @@ async function finalizeClosedPullRequestRelease({ github, owner, repo, context }
   await github.rest.issues.createMilestone({ owner, repo, title: nextVersion });
 }
 
+class AutobotProjectManager {
+  static prepareProjectState(input) {
+    return prepareProjectState(input);
+  }
+
+  static syncPreparedProjectState(input) {
+    return syncPreparedProjectState(input);
+  }
+
+  static syncProjectMilestone(input) {
+    return syncProjectMilestone(input);
+  }
+
+  static finalizeClosedPullRequestRelease(input) {
+    return finalizeClosedPullRequestRelease(input);
+  }
+
+  static buildPrCommentBody(input) {
+    return buildPrCommentBody(input);
+  }
+
+  static inferIssueLabels(issue) {
+    return inferIssueLabels(issue);
+  }
+
+  static normalizeLabelName(label) {
+    return normalizeLabelName(label);
+  }
+
+  static parseDeterministicSemver(raw) {
+    return parseDeterministicSemver(raw);
+  }
+
+  static resolvePrLabelDelta(input) {
+    return resolvePrLabelDelta(input);
+  }
+
+  static resolveReleaseItemBump(input) {
+    return resolveReleaseItemBump(input);
+  }
+
+  static resolveRequiredBump(input) {
+    return resolveRequiredBump(input);
+  }
+
+  static semverDecisionFromMetadata(metadata) {
+    return semverDecisionFromMetadata(metadata);
+  }
+
+  static hasReleaseRelevantLabel(labels) {
+    return hasReleaseRelevantLabel(labels);
+  }
+}
+
 module.exports = {
+  AutobotProjectManager,
   finalizeClosedPullRequestRelease,
   hasReleaseRelevantLabel,
   inferIssueLabels,

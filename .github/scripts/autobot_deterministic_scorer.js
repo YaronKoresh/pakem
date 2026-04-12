@@ -1,4 +1,4 @@
-const { LABEL_DEFINITIONS } = require("./autobot_labels");
+const { AutobotLabelRegistry, LABEL_DEFINITIONS } = require("./autobot_labels");
 
 const MAX_EMITTED_LABELS = 12;
 
@@ -78,70 +78,7 @@ const SEMVER_CHANNEL_DEFINITIONS = Object.freeze({
   "patch-maintenance": Object.freeze({ level: "patch", description: "Maintenance-only impact." })
 });
 
-const LABEL_PRIORITY = Object.freeze([
-  "breaking-change",
-  "security",
-  "api",
-  "database",
-  "schema",
-  "compatibility",
-  "migration",
-  "feature-flag",
-  "runtime",
-  "performance",
-  "enhancement",
-  "improvement",
-  "deprecation",
-  "bug",
-  "validation",
-  "stability",
-  "error-handling",
-  "ui",
-  "accessibility",
-  "localization",
-  "documentation",
-  "docs-site",
-  "docs-api",
-  "examples",
-  "test",
-  "workflow",
-  "ci",
-  "automation",
-  "github",
-  "config",
-  "dependencies",
-  "docker",
-  "devcontainer",
-  "packaging",
-  "build",
-  "release",
-  "release-notes",
-  "versioning",
-  "tooling",
-  "dx",
-  "refactor",
-  "quality",
-  "cleanup",
-  "logging",
-  "logging-verbosity",
-  "observability",
-  "monitoring",
-  "telemetry",
-  "policy",
-  "supply-chain",
-  "serialization",
-  "types",
-  "codegen",
-  "infrastructure",
-  "kubernetes",
-  "terraform",
-  "helm",
-  "proposal",
-  "style",
-  "formatting",
-  "lint",
-  "chore"
-]);
+const LABEL_PRIORITY = AutobotLabelRegistry.LABEL_PRIORITY;
 
 const EVIDENCE_RULES = Object.freeze({
   "removed-public-export": Object.freeze({
@@ -1533,292 +1470,319 @@ const LABEL_SCORE_RECIPES = Object.freeze({
   chore: Object.freeze([])
 });
 
-const VALID_LABELS = new Set(Object.keys(LABEL_DEFINITIONS));
+class AutobotDeterministicScorer {
+  static VALID_LABELS = AutobotLabelRegistry.VALID_LABELS;
 
-function clampScore(value) {
-  const numericValue = Number.isFinite(Number(value)) ? Number(value) : 0;
-  if (numericValue <= 0) {
-    return 0;
-  }
-  if (numericValue >= 1) {
-    return 1;
-  }
-  return numericValue;
-}
-
-function normalizeAccumulatedScore(rawScore) {
-  const numericRawScore = Math.max(Number(rawScore) || 0, 0);
-  return clampScore(1 - Math.exp(-numericRawScore));
-}
-
-function createCategoryAccumulator() {
-  return {
-    raw: 0,
-    score: 0,
-    additiveRaw: 0,
-    additiveScore: 0,
-    destructiveRaw: 0,
-    destructiveScore: 0,
-    evidenceCount: 0
-  };
-}
-
-function createImpactAccumulator(level) {
-  return {
-    level,
-    raw: 0,
-    score: 0,
-    evidenceCount: 0
-  };
-}
-
-function normalizeEvidenceItem(evidenceInput) {
-  const evidence = evidenceInput && typeof evidenceInput === "object" ? evidenceInput : {};
-  const ruleId = String(evidence.ruleId || "").trim();
-  const rule = EVIDENCE_RULES[ruleId];
-  if (!rule) {
-    throw new Error(`Unknown deterministic scorer rule: ${ruleId || "(empty)"}`);
-  }
-  const scope = String(evidence.scope || rule.defaultScope || "subsystem");
-  const confidence = String(evidence.confidence || rule.defaultConfidence || "corroborated");
-  const polarity = String(evidence.polarity || rule.defaultPolarity || "neutral");
-  const scopeMultiplier = SCOPE_MULTIPLIERS[scope] || SCOPE_MULTIPLIERS.subsystem;
-  const confidenceMultiplier = CONFIDENCE_MULTIPLIERS[confidence] || CONFIDENCE_MULTIPLIERS.lexical;
-  const occurrenceCount = Math.max(Number(evidence.occurrenceCount) || 1, 1);
-  const baseWeight = Number(rule.baseWeight || 0) * occurrenceCount;
-  const adjustedWeight = baseWeight * scopeMultiplier * confidenceMultiplier;
-  return {
-    ruleId,
-    scope,
-    confidence,
-    polarity,
-    occurrenceCount,
-    baseWeight,
-    adjustedWeight,
-    categoryWeights: rule.categoryWeights || {},
-    impactWeights: rule.impactWeights || {},
-    labelBoosts: rule.labelBoosts || {},
-    hardSemver: rule.hardSemver || null,
-    metadata: evidence.metadata || null
-  };
-}
-
-function readRecipeSourceValue(source, categoryScores, impactScores) {
-  if (source.type === "impact") {
-    return impactScores[source.key]?.score || 0;
-  }
-  if (source.type === "category") {
-    const category = categoryScores[source.key];
-    if (!category) {
+  static clampScore(value) {
+    const numericValue = Number.isFinite(Number(value)) ? Number(value) : 0;
+    if (numericValue <= 0) {
       return 0;
     }
-    if (source.channel === "additive") {
-      return category.additiveScore;
+    if (numericValue >= 1) {
+      return 1;
     }
-    if (source.channel === "destructive") {
-      return category.destructiveScore;
-    }
-    return category.score;
+    return numericValue;
   }
-  return 0;
-}
 
-function scoreLabelRecipes(categoryScores, impactScores, directLabelRawScores) {
-  const labelScores = {};
-  for (const label of Object.keys(LABEL_DEFINITIONS)) {
-    const recipe = LABEL_SCORE_RECIPES[label] || [];
-    let rawScore = directLabelRawScores[label] || 0;
-    for (const source of recipe) {
-      rawScore += readRecipeSourceValue(source, categoryScores, impactScores) * source.weight;
-    }
-    const normalizedScore = normalizeAccumulatedScore(rawScore);
-    labelScores[label] = {
-      label,
-      raw: rawScore,
-      score: normalizedScore,
-      retained: normalizedScore >= LABEL_THRESHOLDS.retain,
-      emitted: normalizedScore >= LABEL_THRESHOLDS.emit,
-      primary: normalizedScore >= LABEL_THRESHOLDS.primary
+  static normalizeAccumulatedScore(rawScore) {
+    const numericRawScore = Math.max(Number(rawScore) || 0, 0);
+    return AutobotDeterministicScorer.clampScore(1 - Math.exp(-numericRawScore));
+  }
+
+  static createCategoryAccumulator() {
+    return {
+      raw: 0,
+      score: 0,
+      additiveRaw: 0,
+      additiveScore: 0,
+      destructiveRaw: 0,
+      destructiveScore: 0,
+      evidenceCount: 0
     };
   }
-  return labelScores;
-}
 
-function rankEmittedLabels(labelScores, options = {}) {
-  const maxLabels = Math.max(Number(options.maxLabels) || MAX_EMITTED_LABELS, 1);
-  const emittedLabels = Object.values(labelScores)
-    .filter((entry) => entry.emitted && VALID_LABELS.has(entry.label))
-    .sort((left, right) => {
-      if (right.score !== left.score) {
-        return right.score - left.score;
+  static createImpactAccumulator(level) {
+    return {
+      level,
+      raw: 0,
+      score: 0,
+      evidenceCount: 0
+    };
+  }
+
+  static normalizeEvidenceItem(evidenceInput) {
+    const evidence = evidenceInput && typeof evidenceInput === "object" ? evidenceInput : {};
+    const ruleId = String(evidence.ruleId || "").trim();
+    const rule = EVIDENCE_RULES[ruleId];
+    if (!rule) {
+      throw new Error(`Unknown deterministic scorer rule: ${ruleId || "(empty)"}`);
+    }
+    const scope = String(evidence.scope || rule.defaultScope || "subsystem");
+    const confidence = String(evidence.confidence || rule.defaultConfidence || "corroborated");
+    const polarity = String(evidence.polarity || rule.defaultPolarity || "neutral");
+    const scopeMultiplier = SCOPE_MULTIPLIERS[scope] || SCOPE_MULTIPLIERS.subsystem;
+    const confidenceMultiplier = CONFIDENCE_MULTIPLIERS[confidence] || CONFIDENCE_MULTIPLIERS.lexical;
+    const occurrenceCount = Math.max(Number(evidence.occurrenceCount) || 1, 1);
+    const baseWeight = Number(rule.baseWeight || 0) * occurrenceCount;
+    const adjustedWeight = baseWeight * scopeMultiplier * confidenceMultiplier;
+    return {
+      ruleId,
+      scope,
+      confidence,
+      polarity,
+      occurrenceCount,
+      baseWeight,
+      adjustedWeight,
+      categoryWeights: rule.categoryWeights || {},
+      impactWeights: rule.impactWeights || {},
+      labelBoosts: rule.labelBoosts || {},
+      hardSemver: rule.hardSemver || null,
+      metadata: evidence.metadata || null
+    };
+  }
+
+  static readRecipeSourceValue(source, categoryScores, impactScores) {
+    if (source.type === "impact") {
+      return impactScores[source.key]?.score || 0;
+    }
+    if (source.type === "category") {
+      const category = categoryScores[source.key];
+      if (!category) {
+        return 0;
       }
-      const leftPriority = LABEL_PRIORITY.indexOf(left.label);
-      const rightPriority = LABEL_PRIORITY.indexOf(right.label);
-      const normalizedLeftPriority = leftPriority === -1 ? LABEL_PRIORITY.length : leftPriority;
-      const normalizedRightPriority = rightPriority === -1 ? LABEL_PRIORITY.length : rightPriority;
-      return normalizedLeftPriority - normalizedRightPriority || left.label.localeCompare(right.label);
-    });
-  return emittedLabels.slice(0, maxLabels);
-}
+      if (source.channel === "additive") {
+        return category.additiveScore;
+      }
+      if (source.channel === "destructive") {
+        return category.destructiveScore;
+      }
+      return category.score;
+    }
+    return 0;
+  }
 
-function deriveSemverDecision(impactScores, hardSemverSignals) {
-  if (hardSemverSignals.major.length > 0) {
-    return {
-      decision: "major",
-      hardRule: true,
-      hardSignals: hardSemverSignals.major,
-      majorScore: 1,
-      minorScore: Math.max(
-        impactScores["minor-additive-capability"]?.score || 0,
-        impactScores["minor-runtime-support-add"]?.score || 0,
-        impactScores["minor-additive-contract"]?.score || 0,
-        impactScores["minor-operational-capability"]?.score || 0
-      ),
-      patchScore: impactScores["patch-maintenance"]?.score || 0
-    };
+  static scoreLabelRecipes(categoryScores, impactScores, directLabelRawScores) {
+    const labelScores = {};
+    for (const label of Object.keys(LABEL_DEFINITIONS)) {
+      const recipe = LABEL_SCORE_RECIPES[label] || [];
+      let rawScore = directLabelRawScores[label] || 0;
+      for (const source of recipe) {
+        rawScore += AutobotDeterministicScorer.readRecipeSourceValue(source, categoryScores, impactScores) * source.weight;
+      }
+      const normalizedScore = AutobotDeterministicScorer.normalizeAccumulatedScore(rawScore);
+      labelScores[label] = {
+        label,
+        raw: rawScore,
+        score: normalizedScore,
+        retained: normalizedScore >= LABEL_THRESHOLDS.retain,
+        emitted: normalizedScore >= LABEL_THRESHOLDS.emit,
+        primary: normalizedScore >= LABEL_THRESHOLDS.primary
+      };
+    }
+    return labelScores;
   }
-  const majorScore = Math.max(
-    impactScores["major-public-contract"]?.score || 0,
-    impactScores["major-data-compatibility"]?.score || 0,
-    impactScores["major-runtime-support-drop"]?.score || 0,
-    impactScores["major-migration-required"]?.score || 0
-  );
-  if (majorScore >= SEMVER_THRESHOLDS.major) {
-    return {
-      decision: "major",
-      hardRule: false,
-      hardSignals: [],
-      majorScore,
-      minorScore: Math.max(
-        impactScores["minor-additive-capability"]?.score || 0,
-        impactScores["minor-runtime-support-add"]?.score || 0,
-        impactScores["minor-additive-contract"]?.score || 0,
-        impactScores["minor-operational-capability"]?.score || 0
-      ),
-      patchScore: impactScores["patch-maintenance"]?.score || 0
-    };
+
+  static rankEmittedLabels(labelScores, options = {}) {
+    const maxLabels = Math.max(Number(options.maxLabels) || MAX_EMITTED_LABELS, 1);
+    const emittedLabels = Object.values(labelScores)
+      .filter((entry) => entry.emitted && AutobotDeterministicScorer.VALID_LABELS.has(entry.label))
+      .sort((left, right) => {
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+        const leftPriority = LABEL_PRIORITY.indexOf(left.label);
+        const rightPriority = LABEL_PRIORITY.indexOf(right.label);
+        const normalizedLeftPriority = leftPriority === -1 ? LABEL_PRIORITY.length : leftPriority;
+        const normalizedRightPriority = rightPriority === -1 ? LABEL_PRIORITY.length : rightPriority;
+        return normalizedLeftPriority - normalizedRightPriority || left.label.localeCompare(right.label);
+      });
+    return emittedLabels.slice(0, maxLabels);
   }
-  if (hardSemverSignals.minor.length > 0) {
+
+  static deriveSemverDecision(impactScores, hardSemverSignals) {
+    if (hardSemverSignals.major.length > 0) {
+      return {
+        decision: "major",
+        hardRule: true,
+        hardSignals: hardSemverSignals.major,
+        majorScore: 1,
+        minorScore: Math.max(
+          impactScores["minor-additive-capability"]?.score || 0,
+          impactScores["minor-runtime-support-add"]?.score || 0,
+          impactScores["minor-additive-contract"]?.score || 0,
+          impactScores["minor-operational-capability"]?.score || 0
+        ),
+        patchScore: impactScores["patch-maintenance"]?.score || 0
+      };
+    }
+    const majorScore = Math.max(
+      impactScores["major-public-contract"]?.score || 0,
+      impactScores["major-data-compatibility"]?.score || 0,
+      impactScores["major-runtime-support-drop"]?.score || 0,
+      impactScores["major-migration-required"]?.score || 0
+    );
+    if (majorScore >= SEMVER_THRESHOLDS.major) {
+      return {
+        decision: "major",
+        hardRule: false,
+        hardSignals: [],
+        majorScore,
+        minorScore: Math.max(
+          impactScores["minor-additive-capability"]?.score || 0,
+          impactScores["minor-runtime-support-add"]?.score || 0,
+          impactScores["minor-additive-contract"]?.score || 0,
+          impactScores["minor-operational-capability"]?.score || 0
+        ),
+        patchScore: impactScores["patch-maintenance"]?.score || 0
+      };
+    }
+    if (hardSemverSignals.minor.length > 0) {
+      return {
+        decision: "minor",
+        hardRule: true,
+        hardSignals: hardSemverSignals.minor,
+        majorScore,
+        minorScore: 1,
+        patchScore: impactScores["patch-maintenance"]?.score || 0
+      };
+    }
+    const minorScore = Math.max(
+      impactScores["minor-additive-capability"]?.score || 0,
+      impactScores["minor-runtime-support-add"]?.score || 0,
+      impactScores["minor-additive-contract"]?.score || 0,
+      impactScores["minor-operational-capability"]?.score || 0
+    );
+    if (minorScore >= SEMVER_THRESHOLDS.minor) {
+      return {
+        decision: "minor",
+        hardRule: false,
+        hardSignals: [],
+        majorScore,
+        minorScore,
+        patchScore: impactScores["patch-maintenance"]?.score || 0
+      };
+    }
     return {
-      decision: "minor",
-      hardRule: true,
-      hardSignals: hardSemverSignals.minor,
-      majorScore,
-      minorScore: 1,
-      patchScore: impactScores["patch-maintenance"]?.score || 0
-    };
-  }
-  const minorScore = Math.max(
-    impactScores["minor-additive-capability"]?.score || 0,
-    impactScores["minor-runtime-support-add"]?.score || 0,
-    impactScores["minor-additive-contract"]?.score || 0,
-    impactScores["minor-operational-capability"]?.score || 0
-  );
-  if (minorScore >= SEMVER_THRESHOLDS.minor) {
-    return {
-      decision: "minor",
+      decision: "patch",
       hardRule: false,
       hardSignals: [],
       majorScore,
       minorScore,
-      patchScore: impactScores["patch-maintenance"]?.score || 0
+      patchScore: Math.max(impactScores["patch-maintenance"]?.score || 0, 0)
     };
   }
-  return {
-    decision: "patch",
-    hardRule: false,
-    hardSignals: [],
-    majorScore,
-    minorScore,
-    patchScore: Math.max(impactScores["patch-maintenance"]?.score || 0, 0)
-  };
+
+  static scoreDeterministicEvidence(payload) {
+    const evidenceInputs = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.evidenceItems)
+        ? payload.evidenceItems
+        : [];
+    const normalizedEvidence = evidenceInputs.map((evidence) => AutobotDeterministicScorer.normalizeEvidenceItem(evidence));
+    const categoryScores = Object.fromEntries(
+      Object.keys(CATEGORY_DEFINITIONS).map((categoryId) => [categoryId, AutobotDeterministicScorer.createCategoryAccumulator()])
+    );
+    const impactScores = Object.fromEntries(
+      Object.entries(SEMVER_CHANNEL_DEFINITIONS).map(([impactId, definition]) => [impactId, AutobotDeterministicScorer.createImpactAccumulator(definition.level)])
+    );
+    const directLabelRawScores = Object.fromEntries(
+      Object.keys(LABEL_DEFINITIONS).map((label) => [label, 0])
+    );
+    const hardSemverSignals = { major: [], minor: [] };
+
+    for (const evidence of normalizedEvidence) {
+      for (const [categoryId, weight] of Object.entries(evidence.categoryWeights)) {
+        const categoryScore = categoryScores[categoryId];
+        if (!categoryScore) {
+          continue;
+        }
+        const contribution = evidence.adjustedWeight * weight;
+        categoryScore.raw += contribution;
+        categoryScore.evidenceCount += 1;
+        if (evidence.polarity === "additive") {
+          categoryScore.additiveRaw += contribution;
+        } else if (evidence.polarity === "destructive") {
+          categoryScore.destructiveRaw += contribution;
+        } else {
+          categoryScore.additiveRaw += contribution * 0.5;
+          categoryScore.destructiveRaw += contribution * 0.5;
+        }
+      }
+      for (const [impactId, weight] of Object.entries(evidence.impactWeights)) {
+        const impactScore = impactScores[impactId];
+        if (!impactScore) {
+          continue;
+        }
+        const contribution = evidence.adjustedWeight * weight;
+        impactScore.raw += contribution;
+        impactScore.evidenceCount += 1;
+      }
+      for (const [label, weight] of Object.entries(evidence.labelBoosts)) {
+        if (!Object.prototype.hasOwnProperty.call(directLabelRawScores, label)) {
+          continue;
+        }
+        directLabelRawScores[label] += evidence.adjustedWeight * weight;
+      }
+      if (evidence.hardSemver === "major") {
+        hardSemverSignals.major.push(evidence.ruleId);
+      }
+      if (evidence.hardSemver === "minor") {
+        hardSemverSignals.minor.push(evidence.ruleId);
+      }
+    }
+
+    for (const categoryScore of Object.values(categoryScores)) {
+      categoryScore.score = AutobotDeterministicScorer.normalizeAccumulatedScore(categoryScore.raw);
+      categoryScore.additiveScore = AutobotDeterministicScorer.normalizeAccumulatedScore(categoryScore.additiveRaw);
+      categoryScore.destructiveScore = AutobotDeterministicScorer.normalizeAccumulatedScore(categoryScore.destructiveRaw);
+    }
+    for (const impactScore of Object.values(impactScores)) {
+      impactScore.score = AutobotDeterministicScorer.normalizeAccumulatedScore(impactScore.raw);
+    }
+
+    const labelScores = AutobotDeterministicScorer.scoreLabelRecipes(categoryScores, impactScores, directLabelRawScores);
+    const emittedLabels = AutobotDeterministicScorer.rankEmittedLabels(labelScores, payload?.options || {});
+    const primaryLabels = emittedLabels.filter((entry) => entry.primary);
+    const semver = AutobotDeterministicScorer.deriveSemverDecision(impactScores, hardSemverSignals);
+
+    return {
+      normalizedEvidence,
+      categoryScores,
+      impactScores,
+      labelScores,
+      emittedLabels,
+      primaryLabels,
+      semver
+    };
+  }
+}
+
+function clampScore(value) {
+  return AutobotDeterministicScorer.clampScore(value);
+}
+
+function deriveSemverDecision(impactScores, hardSemverSignals) {
+  return AutobotDeterministicScorer.deriveSemverDecision(impactScores, hardSemverSignals);
+}
+
+function normalizeAccumulatedScore(rawScore) {
+  return AutobotDeterministicScorer.normalizeAccumulatedScore(rawScore);
+}
+
+function normalizeEvidenceItem(evidenceInput) {
+  return AutobotDeterministicScorer.normalizeEvidenceItem(evidenceInput);
+}
+
+function rankEmittedLabels(labelScores, options) {
+  return AutobotDeterministicScorer.rankEmittedLabels(labelScores, options);
 }
 
 function scoreDeterministicEvidence(payload) {
-  const evidenceInputs = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.evidenceItems)
-      ? payload.evidenceItems
-      : [];
-  const normalizedEvidence = evidenceInputs.map(normalizeEvidenceItem);
-  const categoryScores = Object.fromEntries(
-    Object.keys(CATEGORY_DEFINITIONS).map((categoryId) => [categoryId, createCategoryAccumulator()])
-  );
-  const impactScores = Object.fromEntries(
-    Object.entries(SEMVER_CHANNEL_DEFINITIONS).map(([impactId, definition]) => [impactId, createImpactAccumulator(definition.level)])
-  );
-  const directLabelRawScores = Object.fromEntries(
-    Object.keys(LABEL_DEFINITIONS).map((label) => [label, 0])
-  );
-  const hardSemverSignals = { major: [], minor: [] };
-
-  for (const evidence of normalizedEvidence) {
-    for (const [categoryId, weight] of Object.entries(evidence.categoryWeights)) {
-      const categoryScore = categoryScores[categoryId];
-      if (!categoryScore) {
-        continue;
-      }
-      const contribution = evidence.adjustedWeight * weight;
-      categoryScore.raw += contribution;
-      categoryScore.evidenceCount += 1;
-      if (evidence.polarity === "additive") {
-        categoryScore.additiveRaw += contribution;
-      } else if (evidence.polarity === "destructive") {
-        categoryScore.destructiveRaw += contribution;
-      } else {
-        categoryScore.additiveRaw += contribution * 0.5;
-        categoryScore.destructiveRaw += contribution * 0.5;
-      }
-    }
-    for (const [impactId, weight] of Object.entries(evidence.impactWeights)) {
-      const impactScore = impactScores[impactId];
-      if (!impactScore) {
-        continue;
-      }
-      const contribution = evidence.adjustedWeight * weight;
-      impactScore.raw += contribution;
-      impactScore.evidenceCount += 1;
-    }
-    for (const [label, weight] of Object.entries(evidence.labelBoosts)) {
-      if (!Object.prototype.hasOwnProperty.call(directLabelRawScores, label)) {
-        continue;
-      }
-      directLabelRawScores[label] += evidence.adjustedWeight * weight;
-    }
-    if (evidence.hardSemver === "major") {
-      hardSemverSignals.major.push(evidence.ruleId);
-    }
-    if (evidence.hardSemver === "minor") {
-      hardSemverSignals.minor.push(evidence.ruleId);
-    }
-  }
-
-  for (const categoryScore of Object.values(categoryScores)) {
-    categoryScore.score = normalizeAccumulatedScore(categoryScore.raw);
-    categoryScore.additiveScore = normalizeAccumulatedScore(categoryScore.additiveRaw);
-    categoryScore.destructiveScore = normalizeAccumulatedScore(categoryScore.destructiveRaw);
-  }
-  for (const impactScore of Object.values(impactScores)) {
-    impactScore.score = normalizeAccumulatedScore(impactScore.raw);
-  }
-
-  const labelScores = scoreLabelRecipes(categoryScores, impactScores, directLabelRawScores);
-  const emittedLabels = rankEmittedLabels(labelScores, payload?.options || {});
-  const primaryLabels = emittedLabels.filter((entry) => entry.primary);
-  const semver = deriveSemverDecision(impactScores, hardSemverSignals);
-
-  return {
-    normalizedEvidence,
-    categoryScores,
-    impactScores,
-    labelScores,
-    emittedLabels,
-    primaryLabels,
-    semver
-  };
+  return AutobotDeterministicScorer.scoreDeterministicEvidence(payload);
 }
 
 module.exports = {
+  AutobotDeterministicScorer,
   CATEGORY_DEFINITIONS,
   CONFIDENCE_MULTIPLIERS,
   EVIDENCE_RULES,

@@ -1,44 +1,16 @@
 const fs = require("fs");
 
 const { scoreDeterministicEvidence } = require("./autobot_deterministic_scorer");
+const { AutobotLabelRegistry, MAX_AUTOBOT_LABELS, sortLabels } = require("./autobot_labels");
 
 const SNAPSHOT_FILE = "/tmp/autobot_pr_snapshot.json";
-const MAX_AUTOBOT_LABELS = 12;
 const MAX_PATCH_CHARS_PER_FILE = 700;
 const MAX_TOP_DIRECTORIES = 8;
 const MAX_TOP_FILES = 10;
 const MIN_BEHAVIORAL_ADDITION_LINES = 80;
 const MIN_PUBLIC_CONTRACT_MOVES = 3;
 const MAINTENANCE_ONLY_CATEGORIES = new Set(["documentation", "test", "workflow", "github", "config", "dependencies"]);
-const VERSION_CRITICAL_LABELS = ["breaking-change", "security", "api", "database", "schema", "compatibility", "migration", "feature-flag", "runtime", "performance"];
-const LABEL_ORDER = [
-  "breaking-change",
-  "security",
-  "api",
-  "database",
-  "schema",
-  "compatibility",
-  "migration",
-  "feature-flag",
-  "runtime",
-  "performance",
-  "bug",
-  "enhancement",
-  "ui",
-  "documentation",
-  "test",
-  "workflow",
-  "automation",
-  "github",
-  "ci",
-  "config",
-  "dependencies",
-  "docker",
-  "tooling",
-  "dx",
-  "cleanup",
-  "chore"
-];
+const LABEL_PRIORITY = AutobotLabelRegistry.LABEL_PRIORITY;
 const ACCESSIBILITY_TEXT_PATTERN = /\baria-|accessib|a11y|screen reader|keyboard nav/;
 const AUTOMATION_TEXT_PATTERN = /\b(autobot|automation|label|triage|milestone|release)\b/;
 const FEATURE_FLAG_TEXT_PATTERN = /feature[\s-]?flag|kill switch|rollout/;
@@ -76,18 +48,6 @@ function scoreFile(file) {
   const patchWeight = file.patch ? Math.min(file.patch.length, 4000) : 0;
   const structuralWeight = file.status === "renamed" || file.status === "removed" ? 800 : 0;
   return changeVolume * 5 + patchWeight + structuralWeight;
-}
-
-function sortLabels(labels) {
-  return [...new Set(labels)]
-    .filter(Boolean)
-    .sort((left, right) => {
-      const leftRank = LABEL_ORDER.indexOf(left);
-      const rightRank = LABEL_ORDER.indexOf(right);
-      const normalizedLeftRank = leftRank === -1 ? LABEL_ORDER.length : leftRank;
-      const normalizedRightRank = rightRank === -1 ? LABEL_ORDER.length : rightRank;
-      return normalizedLeftRank - normalizedRightRank || left.localeCompare(right);
-    });
 }
 
 function formatBulletLines(items, fallback) {
@@ -412,22 +372,6 @@ function isDestructiveFileChange(file) {
     || isPublicPackageContractPath(normalizedPath) && Number(file.deletions || 0) > Number(file.additions || 0);
 }
 
-function inferEvidenceScope(file) {
-  const normalizedPath = String(file.filename || "").toLowerCase();
-  if (
-    isPublicPackageContractPath(normalizedPath)
-    || hasApiPathEvidence(normalizedPath)
-    || /\.(proto|graphql|gql)$/.test(normalizedPath)
-    || matchesUiPath(normalizedPath)
-  ) {
-    return "public";
-  }
-  if (file.categories.some((category) => ["documentation", "test", "workflow", "github", "config", "dependencies", "docker", "tooling"].includes(category))) {
-    return "repo";
-  }
-  return "subsystem";
-}
-
 function addEvidenceItem(evidenceMap, ruleId, options = {}) {
   const rawOccurrenceCount = options.occurrenceCount === undefined
     ? 1
@@ -493,10 +437,10 @@ function compareRankedLabelEntries(left, right) {
   if (right.score !== left.score) {
     return right.score - left.score;
   }
-  const leftRank = LABEL_ORDER.indexOf(left.label);
-  const rightRank = LABEL_ORDER.indexOf(right.label);
-  const normalizedLeftRank = leftRank === -1 ? LABEL_ORDER.length : leftRank;
-  const normalizedRightRank = rightRank === -1 ? LABEL_ORDER.length : rightRank;
+  const leftRank = LABEL_PRIORITY.indexOf(left.label);
+  const rightRank = LABEL_PRIORITY.indexOf(right.label);
+  const normalizedLeftRank = leftRank === -1 ? LABEL_PRIORITY.length : leftRank;
+  const normalizedRightRank = rightRank === -1 ? LABEL_PRIORITY.length : rightRank;
   return normalizedLeftRank - normalizedRightRank || left.label.localeCompare(right.label);
 }
 
@@ -519,6 +463,37 @@ function mergeRankedLabels(primaryLabels, secondaryLabels, limit) {
     }
   }
   return mergedLabels;
+}
+
+function selectDeterministicLabels(orderedSignals, deterministicLabelSet, limit) {
+  const explicitLabels = sortLabels(orderedSignals);
+  const fallbackLabels = sortLabels([...deterministicLabelSet]);
+  const selectedLabels = [];
+
+  for (const label of explicitLabels) {
+    if (selectedLabels.includes(label)) {
+      continue;
+    }
+    selectedLabels.push(label);
+    if (selectedLabels.length >= limit) {
+      return selectedLabels;
+    }
+  }
+
+  for (const label of fallbackLabels) {
+    if (selectedLabels.includes(label)) {
+      continue;
+    }
+    if (explicitLabels.length > 0 && AutobotLabelRegistry.GENERIC_FALLBACK_LABELS.includes(label)) {
+      continue;
+    }
+    selectedLabels.push(label);
+    if (selectedLabels.length >= limit) {
+      break;
+    }
+  }
+
+  return selectedLabels;
 }
 
 function buildDeterministicEvidence(filesWithContext, context) {
@@ -571,7 +546,7 @@ function buildDeterministicEvidence(filesWithContext, context) {
     const patch = String(file.patch || "").toLowerCase();
     const categories = new Set(file.categories);
     const signals = new Set(file.signals);
-    const scope = inferEvidenceScope(file);
+    const autobotClassificationInfrastructure = isAutobotClassificationInfrastructure(normalizedPath);
     const destructive = isDestructiveFileChange(file);
     const runtimeAdded = hasPatchLineMatch(file, "+", RUNTIME_SUPPORT_TEXT_PATTERN) && !hasPatchLineMatch(file, "-", RUNTIME_SUPPORT_TEXT_PATTERN);
     const runtimeDropped = hasPatchLineMatch(file, "-", RUNTIME_SUPPORT_TEXT_PATTERN) && !hasPatchLineMatch(file, "+", RUNTIME_SUPPORT_TEXT_PATTERN);
@@ -695,7 +670,7 @@ function buildDeterministicEvidence(filesWithContext, context) {
       }
     }
 
-    if (signals.has("feature-flag") || FEATURE_FLAG_TEXT_PATTERN.test(patch)) {
+    if (!autobotClassificationInfrastructure && (signals.has("feature-flag") || FEATURE_FLAG_TEXT_PATTERN.test(patch))) {
       if (destructive) {
         featureFlagContractFiles.push(file.filename);
       } else {
@@ -899,7 +874,9 @@ function analyzePullRequestSnapshotData(snapshot) {
   const hasBehavioralSurfaceChange = Boolean(
     categoryCounts.get("source") || categoryCounts.get("ui")
   );
-  const maintenanceOnlyEligible = filesWithContext.length > 0 && [...categoryCounts.keys()].every((category) => MAINTENANCE_ONLY_CATEGORIES.has(category)) && !VERSION_CRITICAL_LABELS.some((label) => signalSet.has(label));
+  const maintenanceOnlyEligible = filesWithContext.length > 0
+    && [...categoryCounts.keys()].every((category) => MAINTENANCE_ONLY_CATEGORIES.has(category))
+    && !AutobotLabelRegistry.RELEASE_CRITICAL_LABELS.some((label) => signalSet.has(label));
   const evidenceItems = buildDeterministicEvidence(filesWithContext, {
     behavioralSurfaceAdditions,
     capabilityExpansionSignal,
@@ -972,9 +949,9 @@ function analyzePullRequestSnapshotData(snapshot) {
     }
   }
 
-  const deterministicLabels = mergeRankedLabels(
-    scorerEmittedLabels,
-    sortLabels([...deterministicLabelSet]),
+  const deterministicLabels = selectDeterministicLabels(
+    orderedSignals,
+    deterministicLabelSet,
     MAX_AUTOBOT_LABELS
   );
   const candidateLabels = mergeRankedLabels(
@@ -1036,7 +1013,7 @@ function analyzePullRequestSnapshotData(snapshot) {
     if (categoryCounts.get("dependencies")) classificationSignals.push("Dependency or manifest files changed.");
     if (behavioralSurfaceAdditions > 0) classificationSignals.push(`Added behavioral source or UI files: ${behavioralSurfaceAdditions}.`);
     if (publicContractMoves > 0) classificationSignals.push(`Renamed or removed public package paths: ${publicContractMoves}.`);
-    if (orderedSignals.length > 0) classificationSignals.push(`Deterministic release signals: ${orderedSignals.join(", ")}.`);
+    if (deterministicLabels.length > 0) classificationSignals.push(`Deterministic classification labels: ${deterministicLabels.join(", ")}.`);
     if (classificationSignals.length === 0) classificationSignals.push("Deterministic path analysis did not isolate a narrow label family.");
     classificationSignals.push(`Top directories: ${topDirectories.join(", ") || "(root)"}.`);
     return [
@@ -1099,7 +1076,24 @@ function analyzePullRequestSnapshot() {
   return analyzePullRequestSnapshotData(readJson(SNAPSHOT_FILE));
 }
 
+class AutobotPullRequestAnalyzer {
+  static SNAPSHOT_FILE = SNAPSHOT_FILE;
+
+  static collectPullRequestSnapshot(input) {
+    return collectPullRequestSnapshot(input);
+  }
+
+  static analyzePullRequestSnapshotData(snapshot) {
+    return analyzePullRequestSnapshotData(snapshot);
+  }
+
+  static analyzePullRequestSnapshot() {
+    return analyzePullRequestSnapshot();
+  }
+}
+
 module.exports = {
+  AutobotPullRequestAnalyzer,
   SNAPSHOT_FILE,
   analyzePullRequestSnapshot,
   analyzePullRequestSnapshotData,
