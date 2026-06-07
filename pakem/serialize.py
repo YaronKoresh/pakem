@@ -150,10 +150,9 @@ class XmlSerializer:
         )
         encoded = line.encode("utf-8")
         if len(encoded) != self._header_line_length:
-            f.seek(0)
+            f.seek(self._header_offset + self._header_line_length)
             remainder = f.read()
-            f.seek(0)
-            f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+            f.seek(self._header_offset)
             f.write(line)
             f.write(remainder)
             f.truncate()
