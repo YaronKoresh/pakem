@@ -171,7 +171,7 @@ jobs:
       - name: AI Suggest Relationships
         if: steps.build-ai-prompt.outputs.ready == 'true'
         id: ai-links
-        uses: actions/ai-inference@v2
+        uses: actions/ai-inference@v2.1.1
         with:
           model: openai/gpt-4o
           prompt-file: /tmp/smart_link_prompt.txt
